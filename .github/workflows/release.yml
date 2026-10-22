@@ -1,0 +1,67 @@
+name: Release
+
+# Eine Version wird erzeugt, wenn ein Tag wie "v1.2.0" gesetzt wird.
+# Der Installer wird signiert, damit die App Updates nur von dieser Quelle annimmt.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  release:
+    name: Installer bauen und veroeffentlichen
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Quellcode holen
+        uses: actions/checkout@v4
+
+      - name: Node einrichten
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Rust einrichten
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Abhaengigkeiten installieren
+        run: npm ci
+
+      - name: Werkzeuge holen
+        shell: pwsh
+        run: ./scripts/fetch-tools.ps1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Installer bauen, signieren und veroeffentlichen
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Der geheime Schluessel liegt als Secret im Repository und niemals im Code.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "SilasDownloader ${{ github.ref_name }}"
+          releaseBody: |
+            ## SilasDownloader ${{ github.ref_name }}
+
+            Portabler Downloader für Videos, Serien und Musik — alles in einer App.
+
+            **Installation:** die Setup-Datei unten herunterladen und starten.
+            Windows fragt beim ersten Start eventuell nach einer Bestätigung
+            („unbekannter Herausgeber") — das ist bei Windows-Programmen ohne
+            kostenpflichtiges Zertifikat normal.
+
+            **Update:** wer die App schon hat, bekommt die neue Version über
+            *Über → Nach Updates suchen* oder automatisch beim Start.
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          args: --target x86_64-pc-windows-msvc

@@ -1,0 +1,59 @@
+name: Pruefungen
+
+# Bei jedem Push laufen die Tests. Die Netzwerktests laufen nur mit den
+# Anmeldedaten des Projekts, sonst wuerden sie den Lauf stoeren.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pruefen:
+    name: Bauen und testen
+    runs-on: windows-latest
+
+    steps:
+      - name: Quellcode holen
+        uses: actions/checkout@v4
+
+      - name: Node einrichten
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Rust einrichten
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Abhaengigkeiten installieren
+        run: npm ci
+
+      - name: Werkzeuge holen
+        shell: pwsh
+        run: ./scripts/fetch-tools.ps1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Typen pruefen
+        run: npm run typecheck
+
+      - name: Oberflaeche bauen
+        run: npm run build
+
+      - name: Browser fuer die Oberflaechentests holen
+        run: npx playwright install chromium
+
+      - name: Oberflaechentests laufen lassen
+        run: npm run test:ui
+
+      - name: Rust pruefen
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Installer bauen
+        run: npm run tauri build -- --no-bundle
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}

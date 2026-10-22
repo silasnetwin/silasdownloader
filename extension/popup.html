@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <title>SilasDownloader</title>
+    <style>
+      :root {
+        color-scheme: dark light;
+      }
+      body {
+        width: 320px;
+        margin: 0;
+        padding: 14px;
+        font: 13px/1.5 "Segoe UI", system-ui, sans-serif;
+        background: #12171c;
+        color: #e7edf2;
+      }
+      h1 {
+        margin: 0 0 4px;
+        font-size: 14px;
+      }
+      p {
+        margin: 0 0 12px;
+        opacity: 0.75;
+      }
+      label {
+        display: block;
+        margin-bottom: 4px;
+        opacity: 0.75;
+      }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 7px 9px;
+        border: 1px solid #2c353d;
+        border-radius: 8px;
+        background: #1a2027;
+        color: inherit;
+        font: inherit;
+      }
+      button {
+        width: 100%;
+        margin-top: 10px;
+        padding: 9px;
+        border: 0;
+        border-radius: 8px;
+        background: #3fa37a;
+        color: #0d1114;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #4cc08e;
+      }
+      .hint {
+        margin-top: 10px;
+        font-size: 12px;
+        opacity: 0.6;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>SilasDownloader</h1>
+    <p>Die Adresse landet im Feld der Startseite.</p>
+
+    <label for="url">Adresse</label>
+    <input id="url" type="url" spellcheck="false" placeholder="https://…" />
+
+    <button id="send">In SilasDownloader öffnen</button>
+    <div class="hint" id="state"></div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

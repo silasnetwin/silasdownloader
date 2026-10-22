@@ -1,0 +1,121 @@
+/* SilasDownloader — Design-Tokens
+   Gleiche Palette, Typografie und Abstände wie die Silas-Web-Apps. */
+
+:root {
+  font-family: 'Aptos', 'Segoe UI', sans-serif;
+  color: #edf0ef;
+  background: #0f1112;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  font-optical-sizing: auto;
+  font-weight: 400;
+  font-size: 13px;
+
+  --bg: #0f1112;
+  --panel: #141718;
+  --panel2: #191d1f;
+  --elev: #202527;
+  --border: #292f30;
+  --text: #edf0ef;
+  --muted: #8f9998;
+  --quiet: #626c6b;
+  --accent: #3a9b78;
+  --accent2: #57b993;
+  --accent-dim: #1d4337;
+  --canvas: #0a0c0c;
+  --input: #111415;
+  --shadow: rgba(0, 0, 0, 0.26);
+
+  --brand: #26745e;
+  --radius: 6px;
+  --radius-sm: 4px;
+  --font-display: 'Aptos Display', 'Segoe UI', sans-serif;
+  --font-mono: 'Cascadia Code', ui-monospace, monospace;
+}
+
+:root[data-theme='light'] {
+  --bg: #f4f5f2;
+  --panel: #fff;
+  --panel2: #f2f4f1;
+  --elev: #e8ebe7;
+  --border: #dce1dd;
+  --text: #202724;
+  --muted: #68736d;
+  --quiet: #89938d;
+  --accent: #26745e;
+  --accent2: #31866d;
+  --accent-dim: #dcefe7;
+  --canvas: #e9ece9;
+  --input: #f6f7f6;
+  --shadow: rgba(30, 40, 35, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  min-width: 360px;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--accent2);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: #358f70;
+  color: #fff;
+}
+
+/* Rollbalken im Stil der Web-Apps */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--elev);
+  border: 3px solid var(--bg);
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border);
+}

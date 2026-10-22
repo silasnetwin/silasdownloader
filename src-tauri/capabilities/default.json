@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Berechtigungen für das Hauptfenster von SilasDownloader.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "dialog:default",
+    "notification:default",
+    "updater:default",
+    "autostart:default",
+    "deep-link:default"
+  ]
+}
