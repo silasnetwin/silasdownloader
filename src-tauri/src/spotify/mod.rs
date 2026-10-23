@@ -13,6 +13,8 @@ pub mod workflow;
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    thread,
+    time::Duration,
 };
 
 use serde_json::Value;
@@ -218,8 +220,8 @@ fn album_cover_url(track_id: &str) -> String {
 /// Lädt die Coverbilder der Titel und hängt sie an die Einträge.
 ///
 /// Die Bilder werden blockweise parallel geladen, damit eine ganze Playlist nicht
-/// ewig dauert. Das Cover bekommt den Namen des Titels und liegt damit direkt
-/// neben der MP3-Datei.
+/// ewig dauert. Das Cover bekommt den Namen des Titels und liegt im übergebenen
+/// (temporären) Ordner; in die MP3 wird es anschließend eingebettet.
 fn load_covers(tracks: &mut [SpotifyTrack], artwork_dir: &Path, limit: usize) {
     // Erst die Ziele bestimmen. Gleiche Adressen teilen sich eine Datei.
     let mut targets: HashMap<String, PathBuf> = HashMap::new();
@@ -283,8 +285,8 @@ fn load_covers(tracks: &mut [SpotifyTrack], artwork_dir: &Path, limit: usize) {
         let _ = http_get(url).map(|bytes| std::fs::write(path, bytes));
     }
 
-    // Jeder Titel bekommt sein eigenes Bild neben der Datei. Bei einem Album ist
-    // das für alle Titel dasselbe Cover, aber so passt das Bild immer zum Titel.
+    // Jeder Titel bekommt sein eigenes Bild im temporären Ordner. Bei einem Album
+    // ist das für alle Titel dasselbe Cover, aber so passt das Bild immer zum Titel.
     for (index, _, path) in order {
         if !path.is_file() {
             continue;
@@ -345,8 +347,7 @@ pub fn fetch_public_source(
             .and_then(|entity| entity.get("releaseDate"))
             .and_then(|date| date.get("isoString"))
             .and_then(Value::as_str)
-            .and_then(|date| date.get(..4))
-            .and_then(|year| year.parse::<u32>().ok()),
+            .and_then(parse_year),
     });
     collect_tracks(&page_data, &mut tracks, &mut seen, source_album);
     if tracks.is_empty() {
@@ -388,9 +389,13 @@ pub fn fetch_public_source(
         load_covers(&mut tracks, artwork_dir, cover_limit);
     }
 
-    // Bei Playlists nennt Spotify das Album nicht. Es wird über die Suche von
-    // iTunes ermittelt, damit die MP3-Dateien im richtigen Album landen.
-    fetch_album_details(&mut tracks);
+    // Bei einem einzelnen Track nennt Spotify das Album nicht, bei Playlists fehlt
+    // oft das Jahr. Die Angaben werden über Deezer (Rückfall: iTunes) ergänzt,
+    // damit die MP3-Dateien im richtigen Album landen.
+    fetch_album_details(&mut tracks, source_type == SourceType::Album);
+    if source_type == SourceType::Album {
+        fetch_album_year(&mut tracks);
+    }
 
     let title = find_entity_name(&page_data)
         .or_else(|| page_title(&html))
@@ -459,33 +464,376 @@ struct AlbumContext {
     year: Option<u32>,
 }
 
+/// Ein Titel, für den Albumangaben fehlen.
+struct AlbumLookup {
+    index: usize,
+    artist: String,
+    title: String,
+    /// Laufzeit des Spotify-Titels; hilft, Remixe und Karaoke-Fassungen zu erkennen.
+    duration: Option<u64>,
+}
+
 /// Holt die Albumangaben für Titel, bei denen Spotify sie nicht nennt.
 ///
-/// Die öffentliche Einbettung einer Playlist nennt zu jedem Titel nur Namen und
-/// Interpreten. Das Album lässt sich aber über die Suche von iTunes ermitteln.
-/// Damit daraus kein falsches Album wird, werden Interpret und Titel genau
-/// verglichen und Treffer von fremden Interpreten verworfen.
-fn fetch_album_details(tracks: &mut [SpotifyTrack]) {
+/// Die öffentliche Einbettung eines einzelnen Tracks nennt weder Album noch
+/// Tracknummer. Bei Playlists fehlt oft das Jahr. Deshalb werden die Angaben über
+/// die öffentliche Deezer-Suche ergänzt; iTunes dient als Rückfall. Damit daraus
+/// kein falsches Album wird, werden Interpret und Titel genau verglichen und
+/// Treffer von fremden Interpreten verworfen.
+fn fetch_album_details(tracks: &mut [SpotifyTrack], album_source: bool) {
     // Titel ohne Album brauchen Album, Nummer und Jahr. Titel mit Album, aber ohne
-    // Jahr, brauchen nur das Jahr.
-    let wanted: Vec<(usize, String, String, bool)> = tracks
+    // Jahr, brauchen nur das Jahr. Bei einer Album-Auswahl gilt das Jahr für alle
+    // Titel gemeinsam und wird weiter unten einmal ermittelt.
+    let wanted: Vec<AlbumLookup> = tracks
         .iter()
         .enumerate()
-        .filter(|(_, track)| track.album.trim().is_empty() || track.year.is_none())
-        .map(|(index, track)| {
-            let artist = track.artists.join(", ");
-            let title = strip_title_additions(&track.title);
-            (index, artist, title, track.album.trim().is_empty())
+        .filter(|(_, track)| {
+            track.album.trim().is_empty() || (!album_source && track.year.is_none())
+        })
+        .map(|(index, track)| AlbumLookup {
+            index,
+            artist: track.artists.join(", "),
+            title: strip_title_additions(&track.title),
+            duration: track.duration,
         })
         .collect();
     if wanted.is_empty() {
         return;
     }
 
+    // Deezer kennt auch neue Titel, bei denen die iTunes-Suche oft nichts findet.
+    fetch_deezer_details(tracks, &wanted);
+
+    // Alles, was Deezer nicht kannte, versucht es noch einmal bei iTunes.
+    let remaining: Vec<&AlbumLookup> = wanted
+        .iter()
+        .filter(|lookup| {
+            let track = &tracks[lookup.index];
+            track.album.trim().is_empty() || track.year.is_none()
+        })
+        .collect();
+    fetch_itunes_details(tracks, &remaining);
+}
+
+/// Füllt die Angaben eines Treffers in einen Track, ohne vorhandenes zu überschreiben.
+fn apply_album_match(track: &mut SpotifyTrack, details: AlbumMatch) {
+    if track.album.trim().is_empty() && !details.album.trim().is_empty() {
+        track.album = details.album;
+    }
+    if track.album_artist.trim().is_empty() && !details.album_artist.trim().is_empty() {
+        track.album_artist = details.album_artist;
+    }
+    if track.track_number.is_none() {
+        track.track_number = details.track_number;
+    }
+    if track.year.is_none() {
+        track.year = details.year;
+    }
+}
+
+/// Der Treffer aus der Deezer-Suche.
+struct DeezerMatch {
+    track_id: u64,
+    album: String,
+    album_artist: String,
+}
+
+/// Sucht die fehlenden Angaben über die öffentliche Deezer-Schnittstelle.
+fn fetch_deezer_details(tracks: &mut [SpotifyTrack], wanted: &[AlbumLookup]) {
+    let mut hits: Vec<(usize, DeezerMatch)> = Vec::new();
     for chunk in wanted.chunks(8) {
         let mut children = Vec::new();
-        for (index, artist, title, needs_album) in chunk {
-            let term = format!("{artist} {title}");
+        for lookup in chunk {
+            let term = format!("{} {}", lookup.artist, lookup.title);
+            let url = format!(
+                "https://api.deezer.com/search?q={}&limit=10",
+                encode_query(&term)
+            );
+            let mut command = hidden_command("curl.exe");
+            command
+                .arg("--silent")
+                .arg("--location")
+                .arg("--max-time")
+                .arg("20")
+                .arg("--")
+                .arg(&url)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null());
+            if let Ok(child) = command.spawn() {
+                children.push((lookup, child));
+            }
+        }
+        for (lookup, child) in children {
+            let Ok(output) = child.wait_with_output() else {
+                continue;
+            };
+            let text = String::from_utf8_lossy(&output.stdout);
+            let Ok(value) = serde_json::from_str::<Value>(text.trim()) else {
+                continue;
+            };
+            if let Some(found) =
+                pick_deezer_match(&value, &lookup.artist, &lookup.title, lookup.duration)
+            {
+                hits.push((lookup.index, found));
+            }
+        }
+        // Deezer erlaubt etwa 50 Anfragen in fünf Sekunden. Bei großen Listen
+        // würden die Blöcke sonst zu schnell aufeinander folgen und die Suche
+        // liefert nur noch Fehler.
+        if wanted.len() > 8 {
+            thread::sleep(Duration::from_millis(700));
+        }
+    }
+    if hits.is_empty() {
+        return;
+    }
+
+    // Die Suche nennt weder Tracknummer noch Erscheinungsjahr. Beides steht im
+    // einzelnen Track, den wir deshalb noch einmal abrufen.
+    let mut details: Vec<(usize, AlbumMatch)> = Vec::new();
+    for chunk in hits.chunks(8) {
+        let mut children = Vec::new();
+        for (index, found) in chunk {
+            let url = format!("https://api.deezer.com/track/{}", found.track_id);
+            let mut command = hidden_command("curl.exe");
+            command
+                .arg("--silent")
+                .arg("--location")
+                .arg("--max-time")
+                .arg("20")
+                .arg("--")
+                .arg(&url)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null());
+            if let Ok(child) = command.spawn() {
+                children.push((*index, found, child));
+            }
+        }
+        for (index, found, child) in children {
+            let Ok(output) = child.wait_with_output() else {
+                continue;
+            };
+            let text = String::from_utf8_lossy(&output.stdout);
+            let value = serde_json::from_str::<Value>(text.trim()).ok();
+            let mut details_for_track =
+                value
+                    .as_ref()
+                    .and_then(pick_deezer_track)
+                    .unwrap_or(AlbumMatch {
+                    album: found.album.clone(),
+                    album_artist: found.album_artist.clone(),
+                    track_number: None,
+                    year: None,
+                });
+            // Fehlt im Detail etwas, gilt der Treffer aus der Suche.
+            if details_for_track.album.trim().is_empty() {
+                details_for_track.album = found.album.clone();
+            }
+            if details_for_track.album_artist.trim().is_empty() {
+                details_for_track.album_artist = found.album_artist.clone();
+            }
+            details.push((index, details_for_track));
+        }
+        if hits.len() > 8 {
+            thread::sleep(Duration::from_millis(700));
+        }
+    }
+    for (index, details) in details {
+        apply_album_match(&mut tracks[index], details);
+    }
+}
+
+/// Sucht den passenden Treffer aus der Antwort der Deezer-Suche.
+///
+/// Bevorzugt wird eine Fassung mit passender Laufzeit und ein richtiges Album
+/// gegenüber einer Single. So fallen Remixe und Karaoke-Aufnahmen heraus.
+fn pick_deezer_match(
+    value: &Value,
+    artist: &str,
+    title: &str,
+    duration: Option<u64>,
+) -> Option<DeezerMatch> {
+    let results = value.get("data")?.as_array()?;
+    let mut best: Option<(u32, DeezerMatch)> = None;
+    for result in results {
+        let Some(result_title) = result.get("title").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(result_artist) = result
+            .get("artist")
+            .and_then(|artist| artist.get("name"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        if !same_words(result_artist, artist)
+            || !same_words(&strip_title_additions(result_title), title)
+        {
+            continue;
+        }
+        let Some(album) = result
+            .get("album")
+            .and_then(|album| album.get("title"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        if album.trim().is_empty() {
+            continue;
+        }
+        let Some(track_id) = result.get("id").and_then(Value::as_u64) else {
+            continue;
+        };
+        let result_duration = result.get("duration").and_then(Value::as_u64);
+        let close = match (duration, result_duration) {
+            (Some(expected), Some(actual)) => expected.abs_diff(actual) <= 2,
+            _ => false,
+        };
+        // Ein exakter Titel schlägt eine Fassung mit Zusatz wie "(stripped)".
+        let exact_title = normalize_words(result_title) == normalize_words(title);
+        let is_single = album.to_lowercase().contains("single")
+            || album
+                .trim()
+                .eq_ignore_ascii_case(strip_title_additions(result_title).trim());
+        // Kleiner ist besser: exakter Titel, passende Laufzeit, ganzes Album.
+        let score = if exact_title { 0 } else { 100 }
+            + if close { 0 } else { 10 }
+            + if is_single { 1 } else { 0 };
+        let better = match &best {
+            None => true,
+            Some((best_score, _)) => score < *best_score,
+        };
+        if better {
+            best = Some((
+                score,
+                DeezerMatch {
+                    track_id,
+                    album: album.to_owned(),
+                    album_artist: result_artist.to_owned(),
+                },
+            ));
+        }
+    }
+    best.map(|(_, found)| found)
+}
+
+/// Liest die vollständigen Angaben aus der Antwort von `/track/{id}`.
+fn pick_deezer_track(value: &Value) -> Option<AlbumMatch> {
+    let album = value
+        .get("album")
+        .and_then(|album| album.get("title"))
+        .and_then(Value::as_str)?;
+    if album.trim().is_empty() {
+        return None;
+    }
+    let album_artist = value
+        .get("artist")
+        .and_then(|artist| artist.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let track_number = value
+        .get("track_position")
+        .and_then(Value::as_u64)
+        .and_then(|number| u32::try_from(number).ok());
+    let year = value
+        .get("release_date")
+        .and_then(Value::as_str)
+        .and_then(parse_year);
+    Some(AlbumMatch {
+        album: album.to_owned(),
+        album_artist: album_artist.to_owned(),
+        track_number,
+        year,
+    })
+}
+
+/// Liest eine JSON-Antwort über HTTP.
+fn http_json(url: &str) -> Option<Value> {
+    let bytes = http_get(url).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    serde_json::from_str(text.trim()).ok()
+}
+
+/// Ermittelt das Erscheinungsjahr einer Album-Auswahl über Deezer.
+///
+/// Die Einbettungsseite eines Albums liefert kein Erscheinungsdatum. Statt für
+/// jeden Titel einzeln zu suchen, wird das Jahr einmal für das ganze Album geholt.
+fn fetch_album_year(tracks: &mut [SpotifyTrack]) {
+    let Some(first) = tracks.first() else {
+        return;
+    };
+    if first.album.trim().is_empty() || first.album_artist.trim().is_empty() {
+        return;
+    }
+    if tracks.iter().all(|track| track.year.is_some()) {
+        return;
+    }
+    let term = format!("{} {}", first.album, first.album_artist);
+    let url = format!(
+        "https://api.deezer.com/search/album?q={}&limit=10",
+        encode_query(&term)
+    );
+    let Some(value) = http_json(&url) else {
+        return;
+    };
+    let Some(album_id) = pick_deezer_album(&value, &first.album, &first.album_artist) else {
+        return;
+    };
+    let Some(value) = http_json(&format!("https://api.deezer.com/album/{album_id}")) else {
+        return;
+    };
+    let Some(year) = value
+        .get("release_date")
+        .and_then(Value::as_str)
+        .and_then(parse_year)
+    else {
+        return;
+    };
+    for track in tracks.iter_mut() {
+        if track.year.is_none() {
+            track.year = Some(year);
+        }
+    }
+}
+
+/// Sucht das passende Album aus der Antwort der Deezer-Albumsuche.
+fn pick_deezer_album(value: &Value, title: &str, artist: &str) -> Option<u64> {
+    let results = value.get("data")?.as_array()?;
+    let mut best = None;
+    for result in results {
+        let Some(name) = result.get("title").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(result_artist) = result
+            .get("artist")
+            .and_then(|artist| artist.get("name"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        if !same_words(name, title) || !same_words(result_artist, artist) {
+            continue;
+        }
+        let Some(id) = result.get("id").and_then(Value::as_u64) else {
+            continue;
+        };
+        if name.trim().eq_ignore_ascii_case(title.trim()) {
+            return Some(id);
+        }
+        best.get_or_insert(id);
+    }
+    best
+}
+
+/// Ergänzt fehlende Angaben über die iTunes-Suche.
+fn fetch_itunes_details(tracks: &mut [SpotifyTrack], wanted: &[&AlbumLookup]) {
+    if wanted.is_empty() {
+        return;
+    }
+    for chunk in wanted.chunks(8) {
+        let mut children = Vec::new();
+        for lookup in chunk {
+            let term = format!("{} {}", lookup.artist, lookup.title);
             let url = format!(
                 "https://itunes.apple.com/search?term={}&entity=song&limit=10",
                 encode_query(&term)
@@ -501,10 +849,10 @@ fn fetch_album_details(tracks: &mut [SpotifyTrack]) {
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::null());
             if let Ok(child) = command.spawn() {
-                children.push((index, artist, title, *needs_album, child));
+                children.push((lookup, child));
             }
         }
-        for (index, artist, title, needs_album, child) in children {
+        for (lookup, child) in children {
             let Ok(output) = child.wait_with_output() else {
                 continue;
             };
@@ -512,19 +860,8 @@ fn fetch_album_details(tracks: &mut [SpotifyTrack]) {
             let Ok(value) = serde_json::from_str::<Value>(text.trim()) else {
                 continue;
             };
-            let Some(details) = pick_album_match(&value, artist, title) else {
-                continue;
-            };
-            let track = &mut tracks[*index];
-            if needs_album {
-                track.album = details.album;
-                track.track_number = details.track_number;
-                if track.album_artist.trim().is_empty() {
-                    track.album_artist = details.album_artist;
-                }
-            }
-            if track.year.is_none() {
-                track.year = details.year;
+            if let Some(details) = pick_album_match(&value, &lookup.artist, &lookup.title) {
+                apply_album_match(&mut tracks[lookup.index], details);
             }
         }
     }
@@ -758,8 +1095,7 @@ fn collect_tracks(
                             .get("releaseDate")
                             .and_then(|date| date.get("isoString"))
                             .and_then(Value::as_str)
-                            .and_then(|date| date.get(..4))
-                            .and_then(|year| year.parse::<u32>().ok()),
+                            .and_then(parse_year),
                     }
                 })
                 .or(inherited_album);
@@ -850,7 +1186,19 @@ fn collect_tracks(
                             album_artist,
                             album,
                             track_number,
-                            year: album_context.as_ref().and_then(|album| album.year),
+                            year: album_context
+                                .as_ref()
+                                .and_then(|album| album.year)
+                                // Bei einem einzelnen Track nennt nur das Trackobjekt
+                                // das Erscheinungsdatum. Ohne diesen Rückgriff bliebe
+                                // das Jahr leer und ein altes YouTube-Jahr stehen.
+                                .or_else(|| {
+                                    object
+                                        .get("releaseDate")
+                                        .and_then(|date| date.get("isoString"))
+                                        .and_then(Value::as_str)
+                                        .and_then(parse_year)
+                                }),
                             artwork_path: None,
                             artwork_url,
                             duration,
@@ -877,6 +1225,11 @@ fn parse_number(value: &Value) -> Option<u32> {
         .as_u64()
         .and_then(|number| u32::try_from(number).ok())
         .or_else(|| value.as_str().and_then(|number| number.parse().ok()))
+}
+
+/// Liest das Jahr aus einem ISO-Datum wie `2025-03-25`.
+fn parse_year(value: &str) -> Option<u32> {
+    value.get(..4).and_then(|year| year.parse().ok())
 }
 
 fn find_artwork(value: &Value) -> Option<&str> {
@@ -970,5 +1323,93 @@ fn find_entity_name(value: &Value) -> Option<String> {
         }
         Value::Array(items) => items.iter().find_map(find_entity_name),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn liest_jahr_aus_iso_datum() {
+        assert_eq!(parse_year("2025-03-25"), Some(2025));
+        assert_eq!(parse_year("2025"), Some(2025));
+        assert_eq!(parse_year(""), None);
+        assert_eq!(parse_year("abcd-01-01"), None);
+    }
+
+    #[test]
+    fn erkennt_spotify_links() {
+        assert_eq!(
+            parse_spotify_url("https://open.spotify.com/track/1bAv1DWUibxCIjAk9SlzRi"),
+            Ok((SourceType::Track, "1bAv1DWUibxCIjAk9SlzRi".to_string()))
+        );
+        assert_eq!(
+            parse_spotify_url(
+                "https://open.spotify.com/intl-de/album/0fSfkmx0tdPqFYkJuNX74a?si=abc"
+            ),
+            Ok((SourceType::Album, "0fSfkmx0tdPqFYkJuNX74a".to_string()))
+        );
+        assert!(parse_spotify_url("https://example.com/track/abc").is_err());
+        assert!(parse_spotify_url("https://open.spotify.com/track/abc/extra").is_err());
+    }
+
+    #[test]
+    fn bevorzugt_exakten_titel_mit_album_und_laufzeit() {
+        let value = json!({
+            "data": [
+                {
+                    "id": 1,
+                    "title": "2024 (Remix)",
+                    "duration": 209,
+                    "artist": { "name": "Playboi Carti" },
+                    "album": { "title": "2024 (Remix)" }
+                },
+                {
+                    "id": 2,
+                    "title": "2024",
+                    "duration": 209,
+                    "artist": { "name": "Playboi Carti" },
+                    "album": { "title": "MUSIC - SORRY 4 DA WAIT" }
+                },
+                {
+                    "id": 3,
+                    "title": "2024",
+                    "duration": 180,
+                    "artist": { "name": "Playboi Carti" },
+                    "album": { "title": "Irgendeine Sammlung" }
+                }
+            ]
+        });
+        let found = pick_deezer_match(&value, "Playboi Carti", "2024", Some(209)).unwrap();
+        assert_eq!(found.track_id, 2);
+        assert_eq!(found.album, "MUSIC - SORRY 4 DA WAIT");
+    }
+
+    #[test]
+    fn verwirft_fremde_interpreten() {
+        let value = json!({
+            "data": [{
+                "id": 1,
+                "title": "2024",
+                "duration": 209,
+                "artist": { "name": "Cover Band" },
+                "album": { "title": "Karaoke" }
+            }]
+        });
+        assert!(pick_deezer_match(&value, "Playboi Carti", "2024", Some(209)).is_none());
+    }
+
+    #[test]
+    fn findet_album_trotz_zusatz_im_namen() {
+        let value = json!({
+            "data": [{
+                "id": 7,
+                "title": "MUSIC - SORRY 4 DA WAIT",
+                "artist": { "name": "Playboi Carti" }
+            }]
+        });
+        assert_eq!(pick_deezer_album(&value, "MUSIC", "Playboi Carti"), Some(7));
     }
 }

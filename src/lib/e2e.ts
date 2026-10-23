@@ -4,6 +4,7 @@
 // eigentliche App merkt davon nichts; im fertigen Programm ist der Code nicht
 // enthalten, weil `import.meta.env.DEV` dort falsch ist.
 
+import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 
 /** Die Einstellungen, mit denen die Oberfläche geprüft wird. */
@@ -63,6 +64,33 @@ const serverStatus = {
   error: null,
 };
 
+/** Ein Video, das die Analyse liefert. */
+const videoPreview = {
+  kind: "video" as const,
+  url: "https://example.com/video/1",
+  id: "video-1",
+  title: "Testvideo",
+  channel: "Testkanal",
+  duration: 95,
+  uploadDate: "20250102",
+  thumbnailDataUrl: null,
+  formats: [
+    {
+      id: "18",
+      ext: "mp4",
+      resolution: "640x360",
+      height: 360,
+      fps: 30,
+      vcodec: "avc1",
+      acodec: "mp4a",
+      filesize: 1_048_576,
+      audioOnly: false,
+      videoOnly: false,
+    },
+  ],
+  subtitleLanguages: [],
+};
+
 /** Zählt die Aufrufe, damit die Tests sie prüfen können. */
 export const calls: Array<{ command: string; args: unknown }> = [];
 
@@ -81,6 +109,10 @@ export function install() {
           return [];
         case "list_presets":
           return [];
+        case "analyze_link":
+          return videoPreview;
+        case "start_download":
+          return (payload as { jobId: number }).jobId;
         case "engine_versions":
           return ["2025.10.22", "7.1"];
         case "server_status":
@@ -110,4 +142,17 @@ export function install() {
     },
     { shouldMockEvents: true },
   );
+
+  // Für die Oberflächentests: Aufrufe und Engine-Ereignisse von außen.
+  (
+    window as unknown as {
+      __silasE2E: {
+        calls: typeof calls;
+        emit: (event: string, payload: unknown) => Promise<void>;
+      };
+    }
+  ).__silasE2E = {
+    calls,
+    emit: (event, payload) => emit(event, payload),
+  };
 }

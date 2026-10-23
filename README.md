@@ -23,7 +23,7 @@ Ein Klick auf die Setup-Datei, ein zweiter auf den Link — fertig.
 |---|---|
 | 🎬 **Videos** | Link einfügen, fertig. Die App erkennt selbst, ob es ein einzelnes Video, eine Playlist oder eine Serie mit allen Folgen ist. |
 | 📺 **Serien** | Serienseiten (etwa KiKA „Alle Folgen") werden in die einzelnen Folgen aufgelöst und nach Staffel gefiltert. |
-| 🎵 **Musik** | Spotify-Playlist oder -Album: jeder Titel wird gesucht, als MP3 geladen und mit **Album, Tracknummer, Jahr, Songtext und quadratischem Cover** beschriftet. |
+| 🎵 **Musik** | Spotify-Playlist, -Album oder einzelner Track: jeder Titel wird gesucht, als MP3 geladen und mit **Album, Tracknummer, Jahr, Songtext und quadratischem Cover** beschriftet. |
 | 🔄 **Konverter** | Video in Audio, Tonspur in MP3 oder FLAC, mit Cover und Tags — per Drag & Drop. |
 | 📡 **Direkt auf den Server** | Fertige Dateien legt die App auf deinen Homeserver. Die Zugangsdaten liegen in einem **verschlüsselten Tresor**. |
 | 🖱️ **Aus dem Browser** | Die mitgelieferte Erweiterung übergibt die aktuelle Seite oder einen Link per `silasdownloader://` an die App. |

@@ -8,10 +8,11 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::{
-        atomic::AtomicBool,
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Arc, Mutex,
     },
     thread,
+    time::Duration,
 };
 
 use serde::Serialize;
@@ -32,6 +33,21 @@ use crate::{
 ///
 /// Die normalen Downloads zählen ab 1. So überschneiden sich die Ereignisse nicht.
 const JOB_ID_BASE: u64 = 1_000_000;
+
+/// Wie viele Kennungen ein Ablauf für sich beansprucht.
+///
+/// Zwei gleichzeitig gestartete Abläufe dürfen nicht dieselben Kennungen verwenden,
+/// sonst zählen beide die Ereignisse des jeweils anderen mit. Spotify-Playlists
+/// bleiben weit unter dieser Grenze.
+const JOB_ID_STRIDE: u64 = 100_000;
+
+/// Der nächste freie Kennungsbereich.
+static NEXT_JOB_ID_BASE: AtomicU64 = AtomicU64::new(JOB_ID_BASE);
+
+/// Reserviert einen eigenen Kennungsbereich für einen Ablauf.
+fn allocate_job_base() -> u64 {
+    NEXT_JOB_ID_BASE.fetch_add(JOB_ID_STRIDE, Ordering::Relaxed)
+}
 
 /// Die Ereignisse der Engine, die dieser Ablauf braucht.
 enum EngineEvent {
@@ -98,18 +114,26 @@ pub fn run_workflow(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|value| value.as_millis())
         .unwrap_or_default();
-    let temporary = std::env::temp_dir().join(format!("silas-spotify-{stamp}"));
+    let temporary =
+        std::env::temp_dir().join(format!("silas-spotify-{}-{stamp}", std::process::id()));
     let _ = std::fs::remove_dir_all(&temporary);
     std::fs::create_dir_all(&temporary)
         .map_err(|e| format!("Temporärer Arbeitsordner konnte nicht erstellt werden: {e}"))?;
 
-    // Die Cover landen direkt im Zielordner, also neben den MP3-Dateien. Sie gehen
-    // damit nicht verloren, wenn der temporäre Arbeitsordner verschwindet.
-    // Ist das Einbetten ausgeschaltet, werden gar keine Cover geholt.
+    // Ist das Einbetten ausgeschaltet, werden gar keine Cover geholt. Die Bilder
+    // landen im temporären Ordner und werden nur in die MP3 eingebettet; nach dem
+    // Ablauf wird der Ordner gelöscht. So bleibt neben der MP3 kein Bild liegen.
     let cover_limit = if request.embed_cover { usize::MAX } else { 0 };
-    let source = fetch_public_source(&spotify_url, &output_dir, cover_limit)?;
+    let source = match fetch_public_source(&spotify_url, &temporary, cover_limit) {
+        Ok(source) => source,
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&temporary);
+            return Err(error);
+        }
+    };
     let tracks: Vec<SpotifyTrack> = source.tracks.clone();
-    let result = download_tracks(&app, tracks, &output_dir, &request, &on_progress);
+    let job_base = allocate_job_base();
+    let result = download_tracks(&app, tracks, &output_dir, &request, job_base, &on_progress);
     let _ = std::fs::remove_dir_all(&temporary);
     result.map(|summary| SpotifyWorkflowResult {
         playlist_title: source.title,
@@ -127,6 +151,7 @@ fn download_tracks(
     tracks: Vec<SpotifyTrack>,
     output_dir: &std::path::Path,
     request: &SpotifyWorkflowRequest,
+    job_base: u64,
     on_progress: &impl Fn(SpotifyProgress),
 ) -> Result<(usize, usize), String> {
     let mut seen = HashSet::new();
@@ -157,17 +182,18 @@ fn download_tracks(
     let titles: Arc<Mutex<HashMap<u64, String>>> = Arc::new(Mutex::new(HashMap::new()));
     for (index, track) in &jobs {
         let _ = titles.lock().ok().map(|mut map| {
-            map.insert(JOB_ID_BASE + *index as u64, track.title.clone());
+            map.insert(job_base + *index as u64, track.title.clone());
         });
     }
 
-    // Die Ereignisse der Engine abhören. Der Kennungsbereich trennt sie von den
-    // übrigen Downloads.
+    // Die Ereignisse der Engine abhören. Der eigene Kennungsbereich trennt sie von
+    // den übrigen Downloads und von einem zweiten Spotify-Ablauf.
+    let range_end = job_base + total as u64 + 1;
     let (tx, rx) = mpsc::channel::<EngineEvent>();
     let progress_tx = tx.clone();
     let progress_listener = app.listen("download://progress", move |event| {
         if let Ok(payload) = serde_json::from_str::<ProgressPayload>(event.payload()) {
-            if payload.job_id >= JOB_ID_BASE {
+            if payload.job_id >= job_base && payload.job_id < range_end {
                 let _ = progress_tx.send(EngineEvent::Progress(payload));
             }
         }
@@ -175,7 +201,7 @@ fn download_tracks(
     let finished_tx = tx.clone();
     let finished_listener = app.listen("download://finished", move |event| {
         if let Ok(payload) = serde_json::from_str::<FinishedPayload>(event.payload()) {
-            if payload.job_id >= JOB_ID_BASE {
+            if payload.job_id >= job_base && payload.job_id < range_end {
                 let _ = finished_tx.send(EngineEvent::Finished(payload));
             }
         }
@@ -184,9 +210,13 @@ fn download_tracks(
 
     let queue = Arc::new(Mutex::new(VecDeque::from(jobs)));
     let worker_count = parallel_jobs(total);
+    // Die tatsächlichen Ergebnisse werden direkt am Worker gezählt. Die Ereignisse
+    // dienen nur der Oberfläche; geht eines verloren, bleibt die Bilanz trotzdem richtig.
+    let stats = Arc::new(Mutex::new((0usize, 0usize)));
     let mut workers = Vec::with_capacity(worker_count);
     for _ in 0..worker_count {
         let queue = Arc::clone(&queue);
+        let stats = Arc::clone(&stats);
         let output = output_dir.to_owned();
         let app = app.clone();
         let quality = request.audio_quality;
@@ -195,7 +225,7 @@ fn download_tracks(
         let handle = thread::spawn(move || loop {
             let job = queue.lock().ok().and_then(|mut guard| guard.pop_front());
             let Some((index, track)) = job else { break };
-            let job_id = JOB_ID_BASE + index as u64;
+            let job_id = job_base + index as u64;
             let query = search_query(&track.title, &track.artists);
             let mut settings = audio_settings(&output, quality, embed_cover);
             settings.filename_template = safe_filename(&track.title);
@@ -213,7 +243,7 @@ fn download_tracks(
             let cancel = Arc::new(AtomicBool::new(false));
             // Der Auftrag wird blockierend ausgeführt. Erst danach holt der Worker
             // den nächsten Titel - so bleiben höchstens vier Downloads gleichzeitig aktiv.
-            let _ = run_download(
+            let outcome = run_download(
                 app.clone(),
                 job_id,
                 DownloadRequest {
@@ -229,18 +259,24 @@ fn download_tracks(
                 },
                 cancel,
             );
+            if let Ok(mut stats) = stats.lock() {
+                if outcome.is_ok() {
+                    stats.0 += 1;
+                } else {
+                    stats.1 += 1;
+                }
+            }
         });
         workers.push(handle);
     }
 
-    // Fortschritt und Abschluss zusammenführen.
-    let mut downloaded = 0usize;
-    let mut failed = 0usize;
+    // Fortschritt und Abschluss zusammenführen. Ein Zeitlimit verhindert, dass der
+    // Ablauf hängen bleibt, wenn ein Abschlussereignis einmal nicht ankommt.
     let mut finished_count = 0usize;
-    while let Ok(event) = rx.recv() {
-        match event {
-            EngineEvent::Progress(payload) => {
-                let index = (payload.job_id - JOB_ID_BASE) as usize;
+    loop {
+        match rx.recv_timeout(Duration::from_millis(500)) {
+            Ok(EngineEvent::Progress(payload)) => {
+                let index = (payload.job_id - job_base) as usize;
                 let title = titles
                     .lock()
                     .ok()
@@ -261,19 +297,14 @@ fn download_tracks(
                     output_file: None,
                 });
             }
-            EngineEvent::Finished(payload) => {
-                let index = (payload.job_id - JOB_ID_BASE) as usize;
+            Ok(EngineEvent::Finished(payload)) => {
+                let index = (payload.job_id - job_base) as usize;
                 finished_count += 1;
                 let title = titles
                     .lock()
                     .ok()
                     .and_then(|map| map.get(&payload.job_id).cloned())
                     .unwrap_or_else(|| format!("Track {index}"));
-                if payload.ok {
-                    downloaded += 1;
-                } else {
-                    failed += 1;
-                }
                 on_progress(SpotifyProgress {
                     index,
                     total,
@@ -292,15 +323,23 @@ fn download_tracks(
                     break;
                 }
             }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if workers.iter().all(|worker| worker.is_finished()) {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
     let _ = progress_listener;
     let _ = finished_listener;
     for worker in workers {
         if worker.join().is_err() {
-            failed += 1;
+            if let Ok(mut stats) = stats.lock() {
+                stats.1 += 1;
+            }
         }
     }
+    let (downloaded, failed) = stats.lock().map(|stats| *stats).unwrap_or((0, total));
     Ok((downloaded, failed))
 }
-

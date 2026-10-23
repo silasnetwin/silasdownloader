@@ -622,6 +622,14 @@ fn emit_finished<R: Runtime>(
             output_files,
         },
     );
+    // Der Auftrag ist beendet, der Abbruchschalter wird nicht mehr gebraucht. Das
+    // Aufräumen hier hilft auch den Spotify-Aufträgen, deren Ereignisse die
+    // Oberfläche bewusst nicht mehr verarbeitet.
+    if let Some(state) = app.try_state::<crate::AppState>() {
+        if let Ok(mut cancels) = state.cancels.lock() {
+            cancels.remove(&job_id);
+        }
+    }
 }
 
 /// Die Sonderzeichen der Windows-Codepage 1252 (0x80–0x9F).

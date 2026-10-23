@@ -239,7 +239,7 @@ export default function Spotify() {
             }}
           >
             {sprich(
-              "Die Cover kommen direkt von Spotify und sind quadratisch. Das Album, die Tracknummer und das Jahr stehen in den Tags — bei Playlists sucht die App sie nach, weil Spotify sie dort nicht nennt.",
+              "Die Cover kommen direkt von Spotify und sind quadratisch. Das Album, die Tracknummer und das Jahr stehen in den Tags — bei einzelnen Tracks und Playlists sucht die App sie nach, weil Spotify sie dort nicht nennt.",
             )}
           </p>
         </div>

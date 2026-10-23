@@ -1,8 +1,8 @@
 //! Schreibt zusätzliche Metadaten in eine fertige Mediendatei.
 //!
 //! Für Spotify-Tracks stammen Album, Album-Interpret, Tracknummer und Cover aus der
-//! Spotify-Seite. Die Engine bettet die Metadaten des Videos ein, deshalb werden die
-//! Spotify-Angaben danach mit FFmpeg überschrieben.
+//! Spotify-Seite und ergänzenden Albumdaten. Die Engine bettet die Metadaten des
+//! Videos ein, deshalb werden die Spotify-Angaben danach mit FFmpeg überschrieben.
 
 use std::path::{Path, PathBuf};
 
@@ -37,7 +37,8 @@ pub fn write_tags(
     let has_tags = !metadata.artist.trim().is_empty()
         || !metadata.album.trim().is_empty()
         || !metadata.album_artist.trim().is_empty()
-        || metadata.track_number.is_some();
+        || metadata.track_number.is_some()
+        || metadata.year.is_some();
     let cover = metadata
         .artwork_path
         .as_ref()
@@ -94,10 +95,6 @@ pub fn write_tags(
             // Quadratisch zuschneiden, wie ein normales Albumcover.
             .arg("-vf")
             .arg("scale=300:300:force_original_aspect_ratio=increase,crop=300:300")
-            .arg("-id3v2_version")
-            .arg("3")
-            .arg("-write_id3v1")
-            .arg("0")
             .arg("-metadata:s:v")
             .arg("title=Album cover")
             .arg("-metadata:s:v")
@@ -109,6 +106,16 @@ pub fn write_tags(
     } else {
         command.arg("-map").arg("0:a").arg("-c:a").arg("copy");
     }
+    // Die Engine hat bereits die Tags des YouTube-Videos eingebettet. Ohne diesen
+    // Schnitt blieben dessen Album, Jahr, Genre und Beschreibung stehen, wenn
+    // Spotify eine Angabe nicht kennt (etwa bei einem einzelnen Track ohne Album).
+    command
+        .arg("-map_metadata")
+        .arg("-1")
+        .arg("-id3v2_version")
+        .arg("3")
+        .arg("-write_id3v1")
+        .arg("0");
     for (key, value) in [
         ("title", metadata.title.as_str()),
         ("artist", metadata.artist.as_str()),

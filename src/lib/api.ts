@@ -72,8 +72,10 @@ export const convertMedia = (path: string, format: ConvertFormat) =>
 export const listPresets = (settings: Settings) =>
   invoke<Preset[]>("list_presets", { settings });
 
-export const startDownload = (request: DownloadRequest) =>
-  invoke<number>("start_download", { request });
+/** Startet einen Auftrag. Die Nummer kommt aus der Oberfläche, damit deren
+ *  Ereignisse eindeutig zu einem Eintrag gehören — auch bei Wiederholungen. */
+export const startDownload = (jobId: number, request: DownloadRequest) =>
+  invoke<number>("start_download", { jobId, request });
 
 export const cancelDownload = (jobId: number) =>
   invoke<void>("cancel_download", { jobId });

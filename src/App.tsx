@@ -24,6 +24,14 @@ import About from "./pages/About";
 
 const MAX_LOGS = 600;
 
+/** Ab dieser Kennung beginnen die Aufträge des Spotify-Ablaufs (siehe workflow.rs).
+ *
+ * Der Spotify-Tab zeigt seinen Fortschritt selbst. Ohne diese Grenze würde die
+ * Hauptoberfläche jeden Track als normalen Download behandeln: doppelte Meldungen,
+ * Einträge in der Historie und – bei aktivem Server – Uploads in die Filmbibliothek.
+ */
+const SPOTIFY_JOB_ID_BASE = 1_000_000;
+
 /** Zeigt eine Meldung im Systembereich an.
  *
  * Wenn der Nutzer das nicht erlaubt hat, bleibt es bei der Meldung in der App.
@@ -252,6 +260,7 @@ export default function App() {
     const unlisteners: Array<() => void> = [];
     const register = async () => {
       unlisteners.push(await api.onProgress((payload) => {
+        if (payload.jobId >= SPOTIFY_JOB_ID_BASE) return;
         const patch: Partial<Job> = {
           progress: payload.value,
           state: payload.state,
@@ -263,15 +272,18 @@ export default function App() {
         updateJob(payload.jobId, patch);
       }));
       unlisteners.push(await api.onTitle((payload) => {
+        if (payload.jobId >= SPOTIFY_JOB_ID_BASE) return;
         updateJob(payload.jobId, {
           title: payload.title,
           playlistIndex: payload.playlistIndex,
         });
       }));
       unlisteners.push(await api.onFile((payload) => {
+        if (payload.jobId >= SPOTIFY_JOB_ID_BASE) return;
         updateJob(payload.jobId, { outputFile: payload.path });
       }));
       unlisteners.push(await api.onLog((payload) => {
+        if (payload.jobId >= SPOTIFY_JOB_ID_BASE) return;
         if (payload.level === "debug") return;
         setLogs((current) => {
           const next = [...current, `${payload.level.toUpperCase()}  ${payload.line}`];
@@ -279,6 +291,7 @@ export default function App() {
         });
       }));
       unlisteners.push(await api.onFinished((payload) => {
+        if (payload.jobId >= SPOTIFY_JOB_ID_BASE) return;
         const sag = sprichRef.current;
         updateJob(payload.jobId, {
           state: payload.ok ? "completed" : "failed",
@@ -352,9 +365,21 @@ export default function App() {
               status: sag("Fehlgeschlagen – Wiederholung {n}/2 läuft …", { n: next }),
             });
             window.setTimeout(() => {
-              void api
-                .startDownload(job.request as DownloadRequest)
-                .catch(() => undefined);
+              const current = jobsRef.current.find(
+                (entry) => entry.id === payload.jobId,
+              );
+              // Vielleicht wurde der Auftrag inzwischen entfernt oder von Hand
+              // neu gestartet — dann nicht noch einmal anfassen.
+              if (!current || current.state !== "failed") return;
+              // Die Warteschlange startet den Auftrag gleich selbst. So gilt
+              // auch für Wiederholungen das Limit paralleler Downloads.
+              updateJob(payload.jobId, {
+                state: "pending",
+                progress: 0,
+                speed: "",
+                eta: "",
+                total: "",
+              });
             }, 6000);
           }
           notify(payload.error ?? sag("Der Download ist fehlgeschlagen."), "error");
@@ -503,8 +528,12 @@ export default function App() {
     if (running >= limit) return;
     const next = jobs.find((job) => job.state === "pending");
     if (!next) return;
-    updateJob(next.id, { state: "analyzing", status: sprich("Download wird vorbereitet") });
-    api.startDownload(next.request as DownloadRequest).catch((error) => {
+    updateJob(next.id, {
+      state: "analyzing",
+      error: null,
+      status: sprich("Download wird vorbereitet"),
+    });
+    api.startDownload(next.id, next.request as DownloadRequest).catch((error) => {
       updateJob(next.id, {
         state: "failed",
         error: String(error),
@@ -527,18 +556,19 @@ export default function App() {
 
   const retryJob = useCallback(
     (id: number) => {
-      const job = jobs.find((entry) => entry.id === id);
-      if (!job) return;
       updateJob(id, {
         state: "pending",
         progress: 0,
+        speed: "",
+        eta: "",
+        total: "",
+        outputFile: null,
         error: null,
         attempts: 0,
         status: sprich("Bereit für neuen Versuch"),
       });
-      void api.startDownload(job.request as never);
     },
-    [jobs, updateJob, sprich],
+    [updateJob, sprich],
   );
 
   /* ---------- Einstellungen ---------- */

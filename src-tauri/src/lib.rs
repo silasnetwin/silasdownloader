@@ -13,7 +13,7 @@ pub mod vault;
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
 };
@@ -57,7 +57,6 @@ pub struct AppState {
     pub cancels: Mutex<HashMap<u64, Arc<AtomicBool>>>,
     /// Die Prozesskennungen der laufenden Engine-Prozesse.
     pub pids: Mutex<HashMap<u64, u32>>,
-    pub next_id: AtomicU64,
     /// Der geöffnete Tresor mit den Zugangsdaten des Servers.
     ///
     /// Der Inhalt liegt nur im Arbeitsspeicher. Wird die App geschlossen, ist er
@@ -288,13 +287,19 @@ fn list_presets(settings: Settings) -> Vec<Preset> {
 }
 
 /// Startet einen Download.
+///
+/// Die Auftragsnummer kommt aus der Oberfläche. Nur so passen die Ereignisse
+/// der Engine (`download://…`) zu dem Eintrag, den die Oberfläche anzeigt —
+/// auch wenn ein Auftrag nach einem Fehler erneut gestartet wird. Würde die
+/// Engine selbst zählen, bekäme eine Wiederholung eine neue Nummer und die
+/// Oberfläche würde deren Fortschritt nie sehen.
 #[tauri::command]
 fn start_download(
     app: AppHandle,
     state: State<'_, AppState>,
+    job_id: u64,
     request: DownloadRequest,
 ) -> Result<u64, String> {
-    let job_id = state.next_id.fetch_add(1, Ordering::Relaxed) + 1;
     let cancel = Arc::new(AtomicBool::new(false));
     state
         .cancels
