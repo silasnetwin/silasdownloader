@@ -287,8 +287,6 @@ fn download_tracks(
                     selected_audio_format: None,
                     metadata: Some(metadata),
                     expected_duration: track.duration,
-                    // Musik bleibt lokal und landet nicht in der Filmsammlung.
-                    kind: crate::model::ContentKind::Music,
                 },
                 cancel,
             );

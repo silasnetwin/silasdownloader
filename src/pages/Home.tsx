@@ -127,8 +127,6 @@ export default function Home() {
       playlistBatch: null,
       selectedVideoFormat: null,
       selectedAudioFormat: null,
-      // Ein einzelnes Video ist ein Film.
-      kind: "movie",
     };
     enqueue({ url: video.url, title: video.title, request });
     notify(sprich("„{title}\" ist in der Queue.", { title: video.title }));
@@ -154,11 +152,6 @@ export default function Home() {
         playlistBatch: null,
         selectedVideoFormat: null,
         selectedAudioFormat: null,
-        // Eine Liste mit Staffeln ist eine Serie, eine einfache Playlist sind
-        // meistens Filme. So landet jede Datei in der passenden Bibliothek.
-        kind: list.listKind === "series" || list.entries.some((e) => e.season !== null)
-          ? "series"
-          : "movie",
       };
       enqueue({
         url: entry.url,

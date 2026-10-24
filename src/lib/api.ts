@@ -5,7 +5,6 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type {
   ConvertFormat,
-  ContentKind,
   DownloadRequest,
   FinishedPayload,
   FilePayload,
@@ -17,8 +16,6 @@ import type {
   Preset,
   ProgressPayload,
   SeriesPreview,
-  ServerStatus,
-  ServerUnlock,
   Settings,
   SpotifyPreview,
   SpotifyWorkflowResult,
@@ -96,30 +93,6 @@ export const engineVersions = () =>
   invoke<[string, string]>("engine_versions");
 
 export const revealPath = (path: string) => invoke<void>("reveal_path", { path });
-
-/** Zeigt den Zustand des Tresors an. */
-export const serverStatus = () => invoke<ServerStatus>("server_status");
-
-/** Legt den Tresor an oder öffnet ihn. */
-export const serverUnlock = (data: ServerUnlock) =>
-  invoke<ServerStatus>("server_unlock", {
-    password: data.password,
-    host: data.host,
-    alias: data.alias,
-    user: data.user,
-    apiKey: data.apiKey,
-    jellyfinUrl: data.jellyfinUrl,
-  });
-
-/** Sperrt den Tresor wieder. */
-export const serverLock = () => invoke<void>("server_lock");
-
-/** Prüft die Verbindung und holt die Bibliotheken. */
-export const serverTest = () => invoke<ServerStatus>("server_test");
-
-/** Legt eine Datei auf den Server. */
-export const serverUpload = (path: string, kind: ContentKind) =>
-  invoke<string>("server_upload", { path, kind });
 
 /** Aktualisiert yt-dlp auf die neueste Version. */
 export const updateEngine = () => invoke<string>("update_engine");

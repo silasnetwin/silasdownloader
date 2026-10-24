@@ -5,7 +5,6 @@ import type {
   JobState,
   Settings,
   HistoryEntry,
-  ServerStatus,
 } from "../lib/types";
 
 /** Ein Auftrag in der Queue. */
@@ -71,10 +70,6 @@ export interface AppContextValue {
   };
   setConverterInput: (path: string | null) => void;
   setConverterOutput: (path: string | null) => void;
-  /** Der Zustand des Tresors mit den Zugangsdaten des Servers. */
-  server: ServerStatus | null;
-  /** Liest den Zustand des Tresors neu. */
-  refreshServer: () => Promise<void>;
 }
 
 export const AppContext = createContext<AppContextValue | null>(null);

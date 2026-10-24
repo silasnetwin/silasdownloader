@@ -45,23 +45,10 @@ const settings = {
   theme: "dark",
   startPage: "home",
   customPresets: [],
-  serverUpload: false,
   closeToTray: true,
   autostart: false,
   embedLyrics: true,
   language: "de",
-};
-
-const serverStatus = {
-  configured: false,
-  unlocked: false,
-  host: "",
-  alias: "",
-  user: "root",
-  jellyfinUrl: "",
-  libraries: [],
-  peers: [],
-  error: null,
 };
 
 /** Ein Video, das die Analyse liefert. */
@@ -115,14 +102,6 @@ export function install() {
           return (payload as { jobId: number }).jobId;
         case "engine_versions":
           return ["2025.10.22", "7.1"];
-        case "server_status":
-          return serverStatus;
-        case "server_unlock":
-          return { ...serverStatus, configured: true, unlocked: true };
-        case "server_lock":
-          return null;
-        case "server_test":
-          return { ...serverStatus, configured: true, unlocked: true };
         case "tray_progress":
           return null;
         case "plugin:app|version":

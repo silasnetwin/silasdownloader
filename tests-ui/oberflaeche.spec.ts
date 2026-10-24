@@ -64,26 +64,9 @@ test("zeigt alle Abschnitte der Einstellungen", async ({ page }) => {
     "Geschwindigkeit & Queue",
     "Metadaten & Zusatzdateien",
     "Engine & Updates",
-    "Server-Upload",
   ]) {
     await expect(page.getByRole("heading", { name: titel })).toBeVisible();
   }
-});
-
-test("schaltet den Server-Upload ein und speichert die Angaben", async ({ page }) => {
-  await oeffne(page);
-  await gehe(page, "Einstellungen");
-
-  // Der Abschnitt steht eingeklappt ganz unten.
-  await page.getByRole("button", { name: /Server-Upload/ }).click();
-
-  const passwort = page.getByPlaceholder("Eigenes Passwort wählen");
-  await passwort.fill("testpasswort");
-  await page.getByLabel("Tailscale-Adresse").fill("100.100.1.1");
-  await page.getByLabel("Name im SSH-Config").fill("mein-server");
-  await page.getByRole("button", { name: /Tresor anlegen/ }).click();
-
-  await expect(page.getByText(/Tresor angelegt|Gespeichert/).first()).toBeVisible();
 });
 
 test("schaltet die Startoptionen in den Einstellungen", async ({ page }) => {
@@ -114,9 +97,6 @@ test("schaltet die Oberfläche auf Englisch", async ({ page }) => {
   // Die Navigation ist sofort englisch.
   await expect(page.getByRole("button", { name: "Settings", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
-
-  // Der Server-Upload heißt auf Englisch „Server upload".
-  await expect(page.getByRole("heading", { name: "Server upload" })).toBeVisible();
 
   // Zurück auf Deutsch.
   await page.getByLabel(/^Language/).first().selectOption("de");

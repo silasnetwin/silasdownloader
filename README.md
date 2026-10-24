@@ -25,7 +25,6 @@ Ein Klick auf die Setup-Datei, ein zweiter auf den Link — fertig.
 | 📺 **Serien** | Serienseiten (etwa KiKA „Alle Folgen") werden in die einzelnen Folgen aufgelöst und nach Staffel gefiltert. |
 | 🎵 **Musik** | Spotify-Playlist, -Album oder einzelner Track: jeder Titel wird gesucht, dabei nach **Titel, Interpret und Laufzeit** geprüft (keine Mixe oder „How it was made"-Videos) und als MP3 mit **Album, Tracknummer, Jahr, Songtext und quadratischem Cover** beschriftet. |
 | 🔄 **Konverter** | Video in Audio, Tonspur in MP3 oder FLAC, mit Cover und Tags — per Drag & Drop. |
-| 📡 **Direkt auf den Server** | Fertige Dateien legt die App auf deinen Homeserver. Die Zugangsdaten liegen in einem **verschlüsselten Tresor**. |
 | 🖱️ **Aus dem Browser** | Die mitgelieferte Erweiterung übergibt die aktuelle Seite oder einen Link per `silasdownloader://` an die App. |
 | 📥 **Im Infobereich** | Ein Symbol neben der Uhr zeigt den Fortschritt. Schließen legt die App dorthin — die Downloads laufen weiter. |
 | 🌍 **Deutsch & Englisch** | Die Oberfläche lässt sich mitten im Betrieb umstellen (*Einstellungen → App & Workflow → Sprache*). Die Wahl bleibt gespeichert. |
@@ -71,38 +70,6 @@ Der Workflow `.github/workflows/release.yml` baut daraufhin den Installer, signi
 ihn, legt `latest.json` an und veröffentlicht das Release. Die App findet es beim
 nächsten Start.
 
-## Der Server-Upload
-
-Fertige Dateien können direkt auf einen eigenen Server gelegt werden, ohne
-Netzlaufwerk oder Explorer-Kopieren:
-
-1. In den **Einstellungen** unter *Server-Upload* werden Passwort, Tailscale-Adresse
-   und der API-Schlüssel von Jellyfin eingetragen. Erst danach lässt sich der
-   Upload einschalten.
-2. Die Dateien gehen per SSH in den Zielordner der passenden Bibliothek. **Filme**
-   landen in der Filmsammlung, **Serien** in der Seriensammlung. Die App erkennt
-   selbst, was geladen wurde. Musik bleibt immer lokal.
-3. Danach stößt die App den Bibliotheks-Scan an, damit Jellyfin die Datei aufnimmt.
-
-**Der Tresor:** Adresse, API-Schlüssel und Zielordner stehen nicht in den
-Einstellungen, sondern in einer verschlüsselten Datei (`tresor.dat` im
-AppData-Ordner). Der Schlüssel wird aus dem Passwort abgeleitet (Argon2id),
-verschlüsselt wird mit AES-256-GCM. Ohne das Passwort ist die Datei wertlos —
-das gilt auch, wenn sie vom Rechner kopiert wird.
-
-**Welches Passwort ist gemeint?** Du denkst es dir beim ersten Einrichten selbst
-aus. Es ist ein neues Passwort nur für diese App — nicht das Passwort deines
-Servers, nicht das von Jellyfin und nicht das von Windows. Aus ihm berechnet die
-App den Schlüssel für die verschlüsselte Datei. Gespeichert wird nur die Datei,
-nie das Passwort. Solange die App läuft, merkt sie sich das Passwort und speichert
-Änderungen ohne erneute Eingabe. Nach einem Neustart tippst du es einmal ein —
-die Felder sind bereits ausgefüllt, weil die sichtbaren Angaben (Adresse, Name,
-Benutzer, Jellyfin-Adresse und Zielordner) zusätzlich in `tresor-info.json`
-liegen. Der API-Schlüssel bleibt ausschließlich im verschlüsselten Teil.
-
-Das Passwort schützt die **App**, nicht den Server: auf der Leitung wird weiterhin
-mit dem SSH-Schlüssel gearbeitet, es läuft also kein Kennwort über das Netz.
-
 ## Songtexte
 
 Bei Spotify-Downloads holt die App den Songtext von
@@ -120,16 +87,13 @@ Im Ordner `%APPDATA%\SilasDownloader` liegen:
 |---|---|
 | `settings.json` | deine Einstellungen und Presets |
 | `history.json` | der Verlauf der letzten Downloads |
-| `tresor.dat` | die Server-Angaben, verschlüsselt mit deinem Passwort |
-| `tresor-info.json` | nur die sichtbaren Angaben (Adresse, Name, Benutzer, Zielordner) |
 
 Die App schickt nichts an einen Server des Entwicklers. Nach außen geht nur, was
 für einen Download nötig ist: die abgerufene Seite, der Textabruf bei LRCLIB und
 die Update-Abfrage bei GitHub.
 
-Dieses Repository enthält **keine** persönlichen Daten, keine Serveradressen, keine
-Schlüssel und keine Zugangsdaten. Die Beispiele in der Oberfläche sind erfunden
-(`100.100.1.1`, `mein-server`), und die Tests lesen ihre Angaben aus der Umgebung.
+Dieses Repository enthält **keine** persönlichen Daten und keine Schlüssel oder
+Zugangsdaten.
 
 ## Bedienung
 
@@ -202,16 +166,6 @@ Weitere Skripte:
 | `cargo test --manifest-path src-tauri/Cargo.toml` | Rust-Tests |
 | `cargo test --manifest-path src-tauri/Cargo.toml -- --ignored` | Tests mit Internetzugang |
 
-Die Tests für den Server-Upload lesen ihre Angaben aus der Umgebung und werden
-sonst übersprungen:
-
-```powershell
-$env:SILAS_TEST_HOST = "100.100.1.1"
-$env:SILAS_TEST_ALIAS = "mein-server"
-$env:SILAS_TEST_API_KEY = "…"
-cargo test --manifest-path src-tauri/Cargo.toml -- --ignored
-```
-
 ## Aufbau
 
 ```
@@ -224,9 +178,7 @@ src-tauri/          Backend (Rust)
   src/engine/       Download-Engine, Metadaten, Konverter, Serien
   src/spotify/      Spotify-Ablauf
   src/lyrics.rs     Songtexte von LRCLIB
-  src/server.rs     Verbindung zum Server (Jellyfin und SSH)
   src/tray.rs       Symbol im Infobereich mit Fortschritt
-  src/vault.rs      verschlüsselter Tresor
   resources/bin/    die mitgelieferten Werkzeuge
 extension/          Browser-Erweiterung für Chrome und Edge
 tests-ui/           Oberflächentests mit Playwright

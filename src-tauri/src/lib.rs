@@ -4,11 +4,9 @@ pub mod deeplink;
 pub mod engine;
 pub mod lyrics;
 pub mod model;
-pub mod server;
 pub mod spotify;
 mod storage;
 pub mod tray;
-pub mod vault;
 
 use std::{
     collections::HashMap,
@@ -57,16 +55,6 @@ pub struct AppState {
     pub cancels: Mutex<HashMap<u64, Arc<AtomicBool>>>,
     /// Die Prozesskennungen der laufenden Engine-Prozesse.
     pub pids: Mutex<HashMap<u64, u32>>,
-    /// Der geöffnete Tresor mit den Zugangsdaten des Servers.
-    ///
-    /// Der Inhalt liegt nur im Arbeitsspeicher. Wird die App geschlossen, ist er
-    /// wieder weg.
-    pub vault: Mutex<Option<vault::Vault>>,
-    /// Das Passwort des Tresors, solange er in dieser Sitzung offen ist.
-    ///
-    /// Damit lässt sich später erneut speichern, ohne das Passwort noch einmal
-    /// einzutippen. Beim Schließen der App ist es wieder weg.
-    pub vault_password: Mutex<Option<String>>,
 }
 
 impl AppState {
@@ -75,11 +63,6 @@ impl AppState {
         if let Ok(mut pids) = self.pids.lock() {
             pids.insert(job_id, pid);
         }
-    }
-
-    /// Der geöffnete Tresor, falls es einen gibt.
-    pub fn vault(&self) -> Option<vault::Vault> {
-        self.vault.lock().ok().and_then(|vault| vault.clone())
     }
 
     /// Vergisst einen beendeten Auftrag.
@@ -405,280 +388,6 @@ fn reveal_path(path: String) -> Result<(), String> {
         .map_err(|e| format!("Ordner konnte nicht geöffnet werden: {e}"))
 }
 
-/// Die Angaben zum Tresor, wie sie in der Oberfläche gebraucht werden.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ServerStatus {
-    /// Ob ein Tresor angelegt ist.
-    pub configured: bool,
-    /// Ob der Tresor geöffnet ist.
-    pub unlocked: bool,
-    /// Die Adresse des Servers.
-    pub host: String,
-    /// Der Name, unter dem der Server bekannt ist.
-    pub alias: String,
-    /// Der Benutzer für die Anmeldung.
-    pub user: String,
-    /// Die Adresse von Jellyfin.
-    pub jellyfin_url: String,
-    /// Die Bibliotheken mit ihrem Zielordner.
-    pub libraries: Vec<vault::Library>,
-    /// Die Geräte im Tailscale-Netz, damit der Server ausgewählt werden kann.
-    pub peers: Vec<String>,
-    /// Der letzte Fehler.
-    pub error: Option<String>,
-}
-
-/// Zeigt den Zustand des Tresors an.
-#[tauri::command]
-fn server_status(state: State<'_, AppState>) -> ServerStatus {
-    let open = state.vault();
-    // Ist der Tresor zu, kommen die sichtbaren Angaben aus der Datei daneben.
-    // So stehen die Felder nach einem Neustart nicht leer da.
-    let saved = vault::load_meta().unwrap_or_default();
-    let pick = |open: Option<String>, saved: String| {
-        open.filter(|value| !value.trim().is_empty())
-            .unwrap_or(saved)
-    };
-    ServerStatus {
-        configured: vault::exists(),
-        unlocked: open.is_some(),
-        host: pick(open.as_ref().map(|v| v.host.clone()), saved.host.clone()),
-        alias: pick(open.as_ref().map(|v| v.ssh_alias.clone()), saved.ssh_alias.clone()),
-        user: pick(
-            open.as_ref().map(|v| v.ssh_user.clone()),
-            if saved.ssh_user.is_empty() {
-                "root".to_string()
-            } else {
-                saved.ssh_user.clone()
-            },
-        ),
-        jellyfin_url: pick(
-            open.as_ref().map(|v| v.jellyfin_url.clone()),
-            saved.jellyfin_url.clone(),
-        ),
-        libraries: open
-            .as_ref()
-            .map(|v| v.libraries.clone())
-            .filter(|libraries| !libraries.is_empty())
-            .unwrap_or(saved.libraries.clone()),
-        peers: server::tailscale_peers(),
-        error: None,
-    }
-}
-
-/// Legt den Tresor an, speichert Änderungen und öffnet ihn.
-///
-/// Ein Passwort ist nur beim ersten Mal und beim Entsperren nötig. Solange der
-/// Tresor in dieser Sitzung offen ist, merkt sich die App das Passwort und
-/// speichert Änderungen ohne erneute Eingabe.
-#[tauri::command]
-fn server_unlock(
-    state: State<'_, AppState>,
-    password: String,
-    host: String,
-    alias: String,
-    user: String,
-    api_key: String,
-    jellyfin_url: String,
-) -> Result<ServerStatus, String> {
-    // Neues Passwort oder das gemerkte aus dieser Sitzung.
-    let mut password = password.trim().to_owned();
-    if password.is_empty() {
-        password = state
-            .vault_password
-            .lock()
-            .ok()
-            .and_then(|gemerkt| gemerkt.clone())
-            .ok_or("Bitte das Passwort für den Tresor eingeben.")?;
-    }
-
-    let offen = state.vault();
-    let gespeichert = vault::unlock(&password).ok();
-    // Ein falsches Passwort darf einen vorhandenen Tresor nicht überschreiben.
-    if gespeichert.is_none() && offen.is_none() && vault::exists() {
-        return Err("Das Passwort passt nicht zu diesem Tresor.".into());
-    }
-    // Grundlage für alles, was leer bleibt: der Tresor selbst.
-    let quelle = gespeichert.or(offen);
-
-    let mut api_key = api_key.trim().to_owned();
-    let mut host = host.trim().to_owned();
-    let mut alias = alias.trim().to_owned();
-    let mut jellyfin_url = jellyfin_url.trim().to_owned();
-    let mut user = user.trim().to_owned();
-    let mut libraries = Vec::new();
-    if let Some(alt) = &quelle {
-        if api_key.is_empty() {
-            api_key = alt.api_key.clone();
-        }
-        if host.is_empty() {
-            host = alt.host.clone();
-        }
-        if alias.is_empty() {
-            alias = alt.ssh_alias.clone();
-        }
-        if jellyfin_url.is_empty() {
-            jellyfin_url = alt.jellyfin_url.clone();
-        }
-        if user.is_empty() {
-            user = alt.ssh_user.clone();
-        }
-        libraries = alt.libraries.clone();
-    }
-    if host.is_empty() {
-        return Err("Die Adresse des Servers fehlt.".into());
-    }
-    if !vault::looks_like_tailscale(&host) && alias.is_empty() {
-        return Err(concat!(
-            "Das sieht nicht nach einer Tailscale-Adresse aus (100.64.0.0/10). ",
-            "Bitte pruefen oder einen Namen aus der SSH-Konfiguration angeben."
-        )
-        .into());
-    }
-    if user.is_empty() {
-        user = "root".to_string();
-    }
-    if jellyfin_url.is_empty() {
-        jellyfin_url = format!("http://{}:8096", host);
-    }
-
-    // Erst speichern. Ob der Server gerade erreichbar ist, entscheidet nur
-    // darüber, ob die Bibliotheken frisch geholt werden — nicht über das Speichern.
-    vault::store(
-        &password,
-        &host,
-        &alias,
-        &user,
-        &api_key,
-        &jellyfin_url,
-        &libraries,
-    )?;
-
-    let mut opened = vault::unlock(&password)?;
-    let mut error = None;
-    if let Err(meldung) = server::reachable(&opened) {
-        error = Some(meldung);
-    } else if !opened.api_key.trim().is_empty() {
-        match server::libraries(&opened) {
-            Ok(frisch) => opened.libraries = frisch,
-            Err(meldung) => error = Some(meldung),
-        }
-    }
-    // Die Bibliotheken können sich geändert haben.
-    vault::store(
-        &password,
-        &host,
-        &alias,
-        &user,
-        &api_key,
-        &jellyfin_url,
-        &opened.libraries,
-    )?;
-
-    *state.vault.lock().map_err(|_| "Der Tresor ist gesperrt.")? = Some(opened.clone());
-    *state
-        .vault_password
-        .lock()
-        .map_err(|_| "Der Tresor ist gesperrt.")? = Some(password);
-    Ok(ServerStatus {
-        configured: true,
-        unlocked: true,
-        host: opened.host,
-        alias: opened.ssh_alias,
-        user: opened.ssh_user,
-        jellyfin_url: opened.jellyfin_url,
-        libraries: opened.libraries,
-        peers: server::tailscale_peers(),
-        error,
-    })
-}
-
-/// Sperrt den Tresor wieder.
-#[tauri::command]
-fn server_lock(state: State<'_, AppState>) {
-    if let Ok(mut vault) = state.vault.lock() {
-        *vault = None;
-    }
-    if let Ok(mut password) = state.vault_password.lock() {
-        *password = None;
-    }
-}
-
-/// Prüft die Verbindung zum Server und holt die Bibliotheken.
-#[tauri::command]
-fn server_test(state: State<'_, AppState>) -> Result<ServerStatus, String> {
-    let mut opened = state
-        .vault()
-        .ok_or("Der Tresor ist gesperrt. Bitte zuerst das Passwort eingeben.")?;
-    let info = server::test(&opened)?;
-    let libraries = server::libraries(&opened)?;
-    // Frische Bibliotheken gleich mitspeichern, damit sie beim nächsten Start da sind.
-    opened.libraries = libraries.clone();
-    if let Some(password) = state.vault_password.lock().ok().and_then(|p| p.clone()) {
-        vault::store(
-            &password,
-            &opened.host,
-            &opened.ssh_alias,
-            &opened.ssh_user,
-            &opened.api_key,
-            &opened.jellyfin_url,
-            &libraries,
-        )?;
-    }
-    if let Ok(mut offen) = state.vault.lock() {
-        *offen = Some(opened.clone());
-    }
-    Ok(ServerStatus {
-        configured: true,
-        unlocked: true,
-        host: opened.host.clone(),
-        alias: opened.ssh_alias.clone(),
-        user: opened.ssh_user.clone(),
-        jellyfin_url: opened.jellyfin_url.clone(),
-        libraries,
-        peers: server::tailscale_peers(),
-        error: Some(info),
-    })
-}
-
-/// Legt eine Datei auf den Server.
-///
-/// Die Zielbibliothek ergibt sich aus der Art des Inhalts: ein Film landet in der
-/// Filmsammlung, eine Serie in der Seriensammlung. Musik bleibt lokal.
-#[tauri::command]
-fn server_upload(
-    state: State<'_, AppState>,
-    path: String,
-    kind: model::ContentKind,
-) -> Result<String, String> {
-    if !kind.goes_to_server() {
-        return Ok(String::new());
-    }
-    let opened = state
-        .vault()
-        .ok_or("Der Tresor ist gesperrt. Bitte zuerst das Passwort eingeben.")?;
-    let target = opened
-        .libraries
-        .iter()
-        .find(|entry| {
-            entry.collection_type == kind.collection_type() && !entry.path.trim().is_empty()
-        })
-        .ok_or(format!(
-            "Der Server kennt keine Bibliothek für {}.",
-            match kind {
-                model::ContentKind::Movie => "Filme",
-                model::ContentKind::Series => "Serien",
-                model::ContentKind::Music => "Musik",
-            }
-        ))?;
-    let local = std::path::PathBuf::from(&path);
-    server::upload(&opened, &local, &target.path)?;
-    // Der Scan sorgt dafür, dass Jellyfin die Datei aufnimmt.
-    let _ = server::trigger_scan(&opened);
-    Ok(target.name.clone())
-}
-
 /// Aktualisiert yt-dlp auf die neueste Version.
 #[tauri::command]
 fn update_engine(app: AppHandle) -> Result<String, String> {
@@ -776,11 +485,6 @@ pub fn run() {
             save_history,
             engine_versions,
             reveal_path,
-            server_status,
-            server_unlock,
-            server_lock,
-            server_test,
-            server_upload,
             update_engine,
             tray_progress,
         ])

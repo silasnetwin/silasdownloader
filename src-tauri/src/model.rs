@@ -304,11 +304,6 @@ pub struct Settings {
     pub start_page: String,
     /// Eigene Presets des Nutzers.
     pub custom_presets: Vec<Preset>,
-    /// Fertige Dateien nach dem Download auf den Server legen.
-    ///
-    /// Das wirkt nur, wenn der Tresor geöffnet ist. Ohne Passwort bleibt der
-    /// Server-Upload abgeschaltet.
-    pub server_upload: bool,
     /// Schließen legt die App in den Infobereich statt sie zu beenden.
     pub close_to_tray: bool,
     /// Beim Anmelden von Windows starten.
@@ -361,7 +356,6 @@ impl Default for Settings {
             theme: "dark".into(),
             start_page: "home".into(),
             custom_presets: Vec::new(),
-            server_upload: false,
             close_to_tray: true,
             autostart: false,
             embed_lyrics: true,
@@ -433,41 +427,6 @@ pub enum JobState {
     Cancelled,
 }
 
-/// Die Art des Inhalts.
-///
-/// Sie entscheidet, in welche Bibliothek von Jellyfin eine fertige Datei gehört.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub enum ContentKind {
-    /// Ein einzelner Film.
-    #[default]
-    Movie,
-    /// Eine Serie mit mehreren Folgen.
-    Series,
-    /// Musik aus einem Streamingdienst.
-    Music,
-}
-
-impl ContentKind {
-    /// Die Art der Jellyfin-Sammlung, in die der Inhalt gehört.
-    pub fn collection_type(self) -> &'static str {
-        match self {
-            ContentKind::Movie => "movies",
-            ContentKind::Series => "tvshows",
-            // Musik hat in Jellyfin keine eigene Sammlung über die Ordner.
-            ContentKind::Music => "",
-        }
-    }
-
-    /// Ob der Inhalt auf den Server gelegt werden soll.
-    ///
-    /// Musik bleibt lokal — sie gehört in die eigene Mediathek, nicht in die
-    /// Filmsammlung des Servers.
-    pub fn goes_to_server(self) -> bool {
-        !matches!(self, ContentKind::Music)
-    }
-}
-
 /// Ein Auftrag, den das Frontend an das Backend meldet.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -490,9 +449,6 @@ pub struct DownloadRequest {
     /// sie verworfen. Das schützt vor Mixen und falschen Videos.
     #[serde(default)]
     pub expected_duration: Option<u64>,
-    /// Was für ein Inhalt geladen wird.
-    #[serde(default)]
-    pub kind: ContentKind,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

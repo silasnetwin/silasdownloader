@@ -8,7 +8,6 @@ import { uebersetze } from "./lib/i18n";
 import type {
   DownloadRequest,
   HistoryEntry,
-  ServerStatus,
   Settings,
 } from "./lib/types";
 import { AppContext, type Job, type Toast } from "./components/context";
@@ -27,8 +26,8 @@ const MAX_LOGS = 600;
 /** Ab dieser Kennung beginnen die Aufträge des Spotify-Ablaufs (siehe workflow.rs).
  *
  * Der Spotify-Tab zeigt seinen Fortschritt selbst. Ohne diese Grenze würde die
- * Hauptoberfläche jeden Track als normalen Download behandeln: doppelte Meldungen,
- * Einträge in der Historie und – bei aktivem Server – Uploads in die Filmbibliothek.
+ * Hauptoberfläche jeden Track als normalen Download behandeln: doppelte Meldungen
+ * und Einträge in der Historie.
  */
 const SPOTIFY_JOB_ID_BASE = 1_000_000;
 
@@ -86,11 +85,8 @@ export default function App() {
     status: "Datei auswählen oder hineinziehen",
     running: false,
   });
-  const [server, setServer] = useState<ServerStatus | null>(null);
   const nextLocalId = useRef(1);
   const jobsRef = useRef<Job[]>([]);
-  const settingsRef = useRef<Settings | null>(null);
-  const serverRef = useRef<ServerStatus | null>(null);
 
   /** Übersetzt einen deutschen Satz in die eingestellte Sprache.
    *
@@ -107,15 +103,6 @@ export default function App() {
   useEffect(() => {
     sprichRef.current = sprich;
   }, [sprich]);
-
-  // Die Ereignisse der Engine laufen in eigenen Funktionen. Damit sie immer die
-  // aktuellen Werte sehen, liegen sie in Referenzen.
-  useEffect(() => {
-    settingsRef.current = settings;
-  }, [settings]);
-  useEffect(() => {
-    serverRef.current = server;
-  }, [server]);
 
   /* ---------- Start ---------- */
 
@@ -233,20 +220,6 @@ export default function App() {
       .catch(() => undefined);
   }, [jobs]);
 
-  /* ---------- Tresor des Servers ---------- */
-
-  const refreshServer = useCallback(async () => {
-    try {
-      setServer(await api.serverStatus());
-    } catch {
-      setServer(null);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refreshServer();
-  }, [refreshServer]);
-
   /* ---------- Theme ---------- */
   const theme: "dark" | "light" = settings?.theme === "light" ? "light" : "dark";
 
@@ -306,27 +279,7 @@ export default function App() {
         void api.forgetJob(payload.jobId);
         if (payload.ok) {
           const file = payload.outputFile ?? payload.outputFiles[0] ?? null;
-          // Fertige Dateien nach dem Download auf den Server legen. Wohin es geht,
-          // entscheidet die Art des Inhalts: Film in die Filme, Serie in die Serien.
           const job = jobsRef.current.find((entry) => entry.id === payload.jobId);
-          const kind = (job?.request as DownloadRequest | undefined)?.kind ?? "movie";
-          if (file && settingsRef.current?.serverUpload && serverRef.current?.unlocked) {
-            void api
-              .serverUpload(file, kind)
-              .then((bibliothek) => {
-                if (!bibliothek) return;
-                notify(sag("Auf den Server gelegt: {library}", { library: bibliothek }));
-                void notifySystem(
-                  sag("Auf den Server gelegt: {library}", { library: bibliothek }),
-                );
-              })
-              .catch((error) =>
-                notify(
-                  sag("Der Upload ist fehlgeschlagen: {error}", { error: String(error) }),
-                  "error",
-                ),
-              );
-          }
           if (file && job) {
             const request = job.request as DownloadRequest | undefined;
             const mode = request?.settings.mode;
@@ -621,8 +574,6 @@ export default function App() {
         setConverter((current) => ({ ...current, input: path, progress: 0 })),
       setConverterOutput: (path: string | null) =>
         setConverter((current) => ({ ...current, output: path })),
-      server,
-      refreshServer,
     }),
     [
       settings,
@@ -644,8 +595,6 @@ export default function App() {
       theme,
       engine,
       page,
-      server,
-      refreshServer,
     ],
   );
 

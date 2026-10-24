@@ -5,7 +5,7 @@
 //! `tests-ui` achtet darauf, dass kein Schlüssel doppelt vorkommt.
 //!
 //! Übersetzt wird nicht Wort für Wort, sondern so, wie ein englisches Programm
-//! schreiben würde. Die Namen der Werkzeuge (yt-dlp, FFmpeg, Jellyfin) bleiben.
+//! schreiben würde. Die Namen der Werkzeuge (yt-dlp, FFmpeg) bleiben.
 
 export const en: Record<string, string> = {
   /* ---------- Navigation und Rahmen ---------- */
@@ -184,7 +184,7 @@ export const en: Record<string, string> = {
     "Portable downloader for videos, series and music from any site. Everything it needs is inside the app — no Python, no Rust, no extra programs.",
   "Version {version}": "Version {version}",
   "Was die App kann": "What the app can do",
-  "Vier Bereiche, ein Programm.": "Four areas, one program.",
+  "Drei Bereiche, ein Programm.": "Three areas, one program.",
   "Videos und Serien": "Videos and series",
   "Ein Link genügt: die App erkennt selbst, ob es ein Video, eine Playlist oder eine Serie mit allen Folgen ist.":
     "One link is enough: the app works out whether it is a video, a playlist or a series with all episodes.",
@@ -193,9 +193,6 @@ export const en: Record<string, string> = {
     "Playlist or album: every track is searched, downloaded as MP3 and tagged with album, track number, year and a square cover.",
   "Video in Audio, Tonspur in MP3 oder FLAC, mit Cover und Tags — per Drag & Drop.":
     "Video to audio, audio to MP3 or FLAC, with cover and tags — by drag & drop.",
-  "Direkt auf den Server": "Straight to the server",
-  "Fertige Dateien legt die App auf deinen Homeserver — mit Tresor, damit die Zugangsdaten niemand mitbekommt.":
-    "The app puts finished files on your home server — with a vault, so nobody else gets the credentials.",
   Geschwindigkeit: "Speed",
   "YouTube begrenzt die Rate pro Stream. Der Hebel ist die Parallelität.":
     "YouTube limits the rate per stream. Parallelism is the lever.",
@@ -303,50 +300,6 @@ export const en: Record<string, string> = {
   "yt-dlp geht alle paar Wochen kaputt, wenn sich eine Seite ändert. Die Aktualisierung holt die neueste Version von GitHub. Vorher bitte laufende Downloads beenden.":
     "yt-dlp breaks every few weeks when a site changes. The update fetches the newest version from GitHub. Please stop running downloads first.",
 
-  /* ---------- Einstellungen: Server-Upload ---------- */
-  "Server-Upload": "Server upload",
-  "Fertige Dateien direkt auf den Homeserver legen — über das Tailscale-Netz.":
-    "Put finished files straight on the home server — over the Tailscale network.",
-  "Die Angaben liegen verschlüsselt auf diesem Rechner. Einmal ausfüllen und speichern — nach einem Neustart sind die Felder wieder da, es fehlt nur das Passwort zum Entsperren.":
-    "The details are stored encrypted on this computer. Fill them in and save once — after a restart the fields are back, only the password to unlock is missing.",
-  " Nichts geht dabei verloren.": " Nothing is lost.",
-  "Passwort für den Tresor": "Password for the vault",
-  "bereits entsperrt": "already unlocked",
-  "Eigenes Passwort wählen": "Choose your own password",
-  "Tailscale-Adresse": "Tailscale address",
-  "Name im SSH-Config": "Name in the SSH config",
-  Benutzer: "User",
-  "Jellyfin-Schlüssel": "Jellyfin key",
-  "bleibt gespeichert": "stays saved",
-  "API-Key von Jellyfin": "API key from Jellyfin",
-  "Jellyfin-Adresse": "Jellyfin address",
-  "Was ist das für ein Passwort?": "What kind of password is this?",
-  " Du denkst es dir selbst aus — es ist neu und hat nichts mit dem Server oder mit Jellyfin zu tun. Die App berechnet daraus einen Schlüssel und verschlüsselt damit die Angaben in ":
-    " You make it up yourself — it is new and has nothing to do with the server or with Jellyfin. The app derives a key from it and encrypts the details in ",
-  ". Gespeichert wird nur diese verschlüsselte Datei, nicht das Passwort: ohne das Passwort kommt niemand mehr an den Inhalt, auch du nicht. Solange die App läuft, merkt sie sich das Passwort — Speichern geht dann ohne erneute Eingabe.":
-    ". Only this encrypted file is stored, not the password: without the password nobody gets at the contents, not even you. While the app runs, it remembers the password — saving then needs no new entry.",
-  "Der Benutzer ist auf eigenen Servern fast immer ": "The user on your own servers is almost always ",
-  ". Auf den Server kommt die App über deinen ": ". The app reaches the server with your ",
-  "SSH-Schlüssel": "SSH key",
-  " — es geht also kein Kennwort über das Netz.": " — so no password travels over the network.",
-  "Geräte im Tailscale-Netz:": "Devices in the Tailscale network:",
-  Speichern: "Save",
-  Entsperren: "Unlock",
-  "Tresor anlegen": "Create vault",
-  "Verbindung prüfen": "Test connection",
-  "Fertige Dateien automatisch auf den Server legen": "Put finished files on the server automatically",
-  "Wohin es geht, entscheidet die App selbst:": "The app decides where it goes:",
-  "Musik bleibt immer lokal — sie gehört nicht in die Filmsammlung.":
-    "Music always stays local — it does not belong in the movie library.",
-  Serie: "Series",
-  Film: "Movie",
-  Sperren: "Lock",
-  "Gespeichert. Die Angaben liegen im Tresor.": "Saved. The details are in the vault.",
-  "Tresor angelegt. Der Server-Upload ist bereit.": "Vault created. Server upload is ready.",
-  "Gespeichert — {error}": "Saved — {error}",
-  "Tresor gesperrt.": "Vault locked.",
-  "Die Verbindung steht.": "The connection works.",
-
   /* ---------- App: Meldungen ---------- */
   "SilasDownloader wird gestartet …": "SilasDownloader is starting …",
   "Einstellungen konnten nicht geladen werden.": "Settings could not be loaded.",
@@ -360,7 +313,5 @@ export const en: Record<string, string> = {
   "Version {version} ist verfügbar — im Tab „Über\" installieren.":
     "Version {version} is available — install it on the “About” tab.",
   "Update verfügbar: Version {version}": "Update available: version {version}",
-  "Auf den Server gelegt: {library}": "Put on the server: {library}",
-  "Der Upload ist fehlgeschlagen: {error}": "The upload failed: {error}",
   Audio: "Audio",
 };

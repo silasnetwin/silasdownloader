@@ -9,7 +9,6 @@ import {
   Code2,
   Film,
   Music4,
-  Server,
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
@@ -97,7 +96,7 @@ export default function About() {
         <div className="card-head">
           <div>
             <h2>{sprich("Was die App kann")}</h2>
-            <p>{sprich("Vier Bereiche, ein Programm.")}</p>
+            <p>{sprich("Drei Bereiche, ein Programm.")}</p>
           </div>
         </div>
         <div className="feature-grid">
@@ -120,13 +119,6 @@ export default function About() {
             title={sprich("Konverter")}
             text={sprich(
               "Video in Audio, Tonspur in MP3 oder FLAC, mit Cover und Tags — per Drag & Drop.",
-            )}
-          />
-          <Feature
-            icon={<Server size={15} />}
-            title={sprich("Direkt auf den Server")}
-            text={sprich(
-              "Fertige Dateien legt die App auf deinen Homeserver — mit Tresor, damit die Zugangsdaten niemand mitbekommt.",
             )}
           />
         </div>

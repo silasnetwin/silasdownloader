@@ -55,8 +55,6 @@ export interface Settings {
   theme: string;
   startPage: string;
   customPresets: Preset[];
-  /** Fertige Dateien nach dem Download auf den Server legen. */
-  serverUpload: boolean;
   /** Schließen legt die App in den Infobereich statt sie zu beenden. */
   closeToTray: boolean;
   /** Beim Anmelden von Windows starten (im Hintergrund). */
@@ -227,8 +225,6 @@ export interface DownloadRequest {
   playlistBatch: PlaylistBatch | null;
   selectedVideoFormat: string | null;
   selectedAudioFormat: string | null;
-  /** Was für ein Inhalt geladen wird. Entscheidet die Zielbibliothek auf dem Server. */
-  kind: ContentKind;
 }
 
 export interface HistoryEntry {
@@ -276,39 +272,4 @@ export interface FinishedPayload {
   technicalDetails: string;
   outputFile: string | null;
   outputFiles: string[];
-}
-
-/** Eine Bibliothek von Jellyfin mit ihrem Zielordner auf dem Server. */
-export interface ServerLibrary {
-  name: string;
-  /** Die Art der Sammlung: movies, tvshows oder playlists. */
-  collectionType: string;
-  path: string;
-}
-
-/** Die Art des geladenen Inhalts. */
-export type ContentKind = "movie" | "series" | "music";
-
-/** Der Zustand des Tresors mit den Zugangsdaten des Servers. */
-export interface ServerStatus {
-  configured: boolean;
-  unlocked: boolean;
-  host: string;
-  alias: string;
-  user: string;
-  jellyfinUrl: string;
-  libraries: ServerLibrary[];
-  /** Die Geräte im Tailscale-Netz. */
-  peers: string[];
-  error: string | null;
-}
-
-/** Die geforderten Angaben zum Entsperren des Tresors. */
-export interface ServerUnlock {
-  password: string;
-  host: string;
-  alias: string;
-  user: string;
-  apiKey: string;
-  jellyfinUrl: string;
 }
