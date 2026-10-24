@@ -16,16 +16,18 @@ use std::{
 };
 
 use serde::Serialize;
-use tauri::{AppHandle, Listener};
+use tauri::{AppHandle, Emitter, Listener};
 
 use crate::{
     engine::{
         naming::safe_filename,
         process::{run_download, FinishedPayload, ProgressPayload},
+        tools::resolve_tools,
     },
     model::DownloadRequest,
     spotify::{
-        audio_settings, fetch_public_source, parallel_jobs, search_query, to_metadata, SpotifyTrack,
+        audio_settings, fetch_public_source, parallel_jobs, resolve_youtube_match, to_metadata,
+        SpotifyTrack,
     },
 };
 
@@ -210,6 +212,9 @@ fn download_tracks(
 
     let queue = Arc::new(Mutex::new(VecDeque::from(jobs)));
     let worker_count = parallel_jobs(total);
+    // Die Werkzeuge werden einmal aufgelöst. Die Suche und der Download nutzen
+    // dieselben Binaries.
+    let tools = resolve_tools(Some(app))?;
     // Die tatsächlichen Ergebnisse werden direkt am Worker gezählt. Die Ereignisse
     // dienen nur der Oberfläche; geht eines verloren, bleibt die Bilanz trotzdem richtig.
     let stats = Arc::new(Mutex::new((0usize, 0usize)));
@@ -222,11 +227,38 @@ fn download_tracks(
         let quality = request.audio_quality;
         let embed_cover = request.embed_cover;
         let embed_lyrics = request.embed_lyrics;
+        let yt_dlp = tools.yt_dlp.clone();
+        let deno = tools.deno.clone();
         let handle = thread::spawn(move || loop {
             let job = queue.lock().ok().and_then(|mut guard| guard.pop_front());
             let Some((index, track)) = job else { break };
             let job_id = job_base + index as u64;
-            let query = search_query(&track.title, &track.artists);
+
+            // Erst das passende Video suchen. `ytsearch1` würde blind den ersten
+            // Treffer nehmen - darunter sind oft Mixe oder "How it was made"-Videos.
+            let found = match resolve_youtube_match(
+                &yt_dlp,
+                &deno,
+                &track.title,
+                &track.artists,
+                track.duration,
+            ) {
+                Ok(found) => found,
+                Err(error) => {
+                    emit_failed(&app, job_id, &error);
+                    if let Ok(mut stats) = stats.lock() {
+                        stats.1 += 1;
+                    }
+                    continue;
+                }
+            };
+
+            // Ein alter Treffer mit demselben Dateinamen könnte die falsche Audiodatei
+            // enthalten. Er wird vor dem neuen Download entfernt, damit yt-dlp nicht
+            // einfach die vorhandene Datei überspringt.
+            let target = output.join(format!("{}.mp3", safe_filename(&track.title)));
+            let _ = std::fs::remove_file(&target);
+
             let mut settings = audio_settings(&output, quality, embed_cover);
             settings.filename_template = safe_filename(&track.title);
             let mut metadata = to_metadata(&track);
@@ -247,13 +279,14 @@ fn download_tracks(
                 app.clone(),
                 job_id,
                 DownloadRequest {
-                    url: format!("ytsearch1:{query}"),
+                    url: found.url,
                     settings,
                     playlist_index: None,
                     playlist_batch: None,
                     selected_video_format: None,
                     selected_audio_format: None,
                     metadata: Some(metadata),
+                    expected_duration: track.duration,
                     // Musik bleibt lokal und landet nicht in der Filmsammlung.
                     kind: crate::model::ContentKind::Music,
                 },
@@ -342,4 +375,22 @@ fn download_tracks(
     }
     let (downloaded, failed) = stats.lock().map(|stats| *stats).unwrap_or((0, total));
     Ok((downloaded, failed))
+}
+
+/// Meldet einen Track als fehlgeschlagen, bevor die Engine gestartet wurde.
+///
+/// Die Oberfläche hört auf dieselben Abschlussereignisse wie bei normalen
+/// Downloads. So bekommt auch ein Track ohne passendes Video eine klare Meldung.
+fn emit_failed(app: &AppHandle, job_id: u64, error: &str) {
+    let _ = app.emit(
+        "download://finished",
+        FinishedPayload {
+            job_id,
+            ok: false,
+            error: Some(error.to_owned()),
+            technical_details: String::new(),
+            output_file: None,
+            output_files: Vec::new(),
+        },
+    );
 }

@@ -20,7 +20,11 @@ use std::{
 use serde_json::Value;
 
 use crate::{
-    engine::{naming::safe_filename, tools::hidden_command},
+    engine::{
+        naming::safe_filename,
+        process::duration_is_close,
+        tools::hidden_command,
+    },
     model::{MediaMetadata, Settings},
 };
 
@@ -409,12 +413,514 @@ pub fn fetch_public_source(
 
 /// Erzeugt die Suchanfrage für einen Track.
 pub fn search_query(title: &str, artists: &[String]) -> String {
-    let artist = artists.join(", ");
+    let artist = artists.join(" ");
     if artist.is_empty() {
-        format!("{title} official audio")
+        title.to_owned()
     } else {
-        format!("{artist} {title} official audio")
+        format!("{artist} {title}")
     }
+}
+
+/// Ein YouTube-Treffer, der zu einem Spotify-Titel passt.
+#[derive(Debug, Clone, PartialEq)]
+pub struct YoutubeMatch {
+    pub url: String,
+    pub title: String,
+    pub channel: String,
+    pub duration: Option<u64>,
+}
+
+/// Wörter, die im Titel eines Treffers auf ein falsches Video hindeuten.
+///
+/// Die Liste wird nur angewendet, wenn das Wort nicht selbst im Spotify-Titel
+/// oder im Interpreten vorkommt. Ein Song namens „Live Forever“ darf also
+/// weiterhin als Live-Version erkannt werden.
+const BAD_TITLE_WORDS: &[&str] = &[
+    "was made",
+    "making of",
+    "how it was made",
+    "how i made",
+    "behind the scenes",
+    "type beat",
+    "type beats",
+    "fl studio",
+    "tutorial",
+    "tutorials",
+    "reaction",
+    "reactions",
+    "review",
+    "explained",
+    "interview",
+    "podcast",
+    "documentary",
+    "full album",
+    "whole album",
+    "album stream",
+    "mixtape",
+    "compilation",
+    "compilations",
+    "playlist",
+    "playlists",
+    "medley",
+    "megamix",
+    "mashup",
+    "mix",
+    "mixes",
+    "instrumental",
+    "instrumentals",
+    "karaoke",
+    "cover",
+    "covers",
+    "remix",
+    "remixes",
+    "acoustic",
+    "piano",
+    "guitar",
+    "orchestral",
+    "8 bit",
+    "8bit",
+    "music box",
+    "lullaby",
+    "a cappella",
+    "acapella",
+    "vocals only",
+    "backing track",
+    "minus one",
+    "tribute",
+    "parody",
+    "slowed",
+    "reverb",
+    "sped up",
+    "speed up",
+    "spedup",
+    "nightcore",
+    "daycore",
+    "8d",
+    "3d audio",
+    "bass boost",
+    "bass boosted",
+    "432hz",
+    "528hz",
+    "963hz",
+    "enhanced",
+    "spatial audio",
+    "live",
+    "concert",
+    "performance",
+    "live session",
+    "session",
+    "extended",
+    "radio edit",
+    "teaser",
+    "trailer",
+    "snippet",
+    "preview",
+    "loop",
+    "hour",
+    "1 hour",
+    "10 hours",
+    "hour version",
+    "unreleased",
+    "leaked",
+    "leak",
+    "demo",
+    "og",
+    "remake",
+    "fan made",
+    "ai cover",
+    "ai generated",
+    "ai version",
+    "but every",
+    "but it s",
+    "earrape",
+    "ear rape",
+    "intro",
+    "outro",
+    "interlude",
+    "skit",
+];
+
+/// Wörter, die im Kanalnamen auf ein falsches Video hindeuten.
+const BAD_CHANNEL_WORDS: &[&str] = &[
+    "reaction",
+    "reactions",
+    "tutorial",
+    "tutorials",
+    "karaoke",
+    "instrumental",
+    "instrumentals",
+    "cover",
+    "covers",
+    "remix",
+    "remixes",
+    "slowed",
+    "reverb",
+    "nightcore",
+    "8d",
+    "bass boost",
+    "bass boosted",
+    "playlist",
+    "playlists",
+    "compilation",
+    "compilations",
+    "mixtape",
+    "mix",
+    "mixes",
+    "type beat",
+    "type beats",
+    "fl studio",
+    "tribute",
+    "parody",
+];
+
+/// Sucht zu einem Spotify-Titel das passende YouTube-Video.
+///
+/// `ytsearch1:` nimmt blind den ersten Treffer. Darunter sind bei Musik oft
+/// „How it was made“-Videos, Stunden-Mixe, Cover oder Instrumentals. Deshalb
+/// werden mehrere Treffer geholt und nach Titel, Interpret, Laufzeit und
+/// offiziellem Kanal bewertet. Wenn kein Treffer eindeutig passt, lieber gar
+/// nichts laden als die falsche Datei.
+pub fn resolve_youtube_match(
+    yt_dlp: &Path,
+    deno: &Path,
+    title: &str,
+    artists: &[String],
+    duration: Option<u64>,
+) -> Result<YoutubeMatch, String> {
+    let base = search_query(title, artists);
+    let mut queries = vec![(base.clone(), 15usize)];
+    for suffix in ["topic", "official audio"] {
+        let query = format!("{base} {suffix}");
+        if !queries.iter().any(|(known, _)| *known == query) {
+            queries.push((query, 10));
+        }
+    }
+
+    let mut last_error: Option<String> = None;
+    for (query, limit) in queries {
+        match search_youtube(yt_dlp, deno, &query, limit) {
+            Ok(entries) => {
+                if let Some(found) = pick_youtube_candidate(&entries, title, artists, duration) {
+                    return Ok(found);
+                }
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    Err(match last_error {
+        Some(error) => format!("Die Videosuche für „{title}“ ist fehlgeschlagen: {error}"),
+        None => format!(
+            "Für „{title}“ wurde kein passendes Video gefunden. Die Treffer waren Mixe, \
+             Cover oder hatten eine andere Laufzeit."
+        ),
+    })
+}
+
+/// Holt die Suchtreffer von YouTube.
+fn search_youtube(
+    yt_dlp: &Path,
+    deno: &Path,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<Value>, String> {
+    let out = hidden_command(yt_dlp)
+        .env("PYTHONIOENCODING", "utf-8")
+        .arg("--ignore-config")
+        .arg("--js-runtimes")
+        .arg(format!("deno:{}", deno.display()))
+        .arg("--flat-playlist")
+        .arg("--dump-single-json")
+        .arg("--no-warnings")
+        .arg("--no-progress")
+        .arg("--socket-timeout")
+        .arg("15")
+        .arg("--retries")
+        .arg("2")
+        .arg(format!("ytsearch{limit}:{query}"))
+        .output()
+        .map_err(|error| format!("yt-dlp konnte nicht gestartet werden: {error}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let last = stderr
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("unbekannter Fehler")
+            .trim()
+            .to_owned();
+        return Err(last);
+    }
+    let value: Value = serde_json::from_slice(&out.stdout)
+        .map_err(|error| format!("Die Suchergebnisse konnten nicht gelesen werden: {error}"))?;
+    Ok(value
+        .get("entries")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default())
+}
+
+/// Wählt aus den Suchtreffern das plausibelste Video aus.
+pub fn pick_youtube_candidate(
+    entries: &[Value],
+    title: &str,
+    artists: &[String],
+    expected_duration: Option<u64>,
+) -> Option<YoutubeMatch> {
+    let expected_duration = expected_duration.filter(|duration| *duration > 0);
+    let track_title = {
+        let stripped = normalize_words(&strip_title_additions(title));
+        if stripped.is_empty() {
+            normalize_words(title)
+        } else {
+            stripped
+        }
+    };
+    if track_title.is_empty() {
+        return None;
+    }
+    let track_text = normalize_words(&format!("{title} {}", artists.join(" ")));
+    let artist_names: Vec<String> = artists
+        .iter()
+        .map(|artist| normalize_words(artist))
+        .filter(|artist| !artist.is_empty() && artist != "various artists")
+        .collect();
+
+    let mut best: Option<(i32, YoutubeMatch)> = None;
+    for entry in entries {
+        if entry
+            .get("live_status")
+            .and_then(Value::as_str)
+            .is_some_and(|status| status == "is_live" || status == "is_upcoming")
+        {
+            continue;
+        }
+        let Some(id) = entry.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(candidate_title) = entry.get("title").and_then(Value::as_str) else {
+            continue;
+        };
+        if id.is_empty() || candidate_title.trim().is_empty() {
+            continue;
+        }
+        let channel = entry
+            .get("channel")
+            .and_then(Value::as_str)
+            .or_else(|| entry.get("uploader").and_then(Value::as_str))
+            .unwrap_or_default();
+        let duration = entry.get("duration").and_then(number);
+        let title_norm = normalize_words(candidate_title);
+        let clean_norm = normalize_words(&strip_brackets(candidate_title));
+        let channel_norm = normalize_words(channel);
+
+        if contains_unwanted(&title_norm, &track_text, BAD_TITLE_WORDS)
+            || contains_unwanted(&channel_norm, &track_text, BAD_CHANNEL_WORDS)
+        {
+            continue;
+        }
+        if let (Some(expected), Some(actual)) = (expected_duration, duration) {
+            if !duration_is_close(expected, actual as f64) {
+                continue;
+            }
+        }
+        let Some(title_points) =
+            title_match_points(&title_norm, &clean_norm, candidate_title, &track_title)
+        else {
+            continue;
+        };
+        let artist_points = artist_match_points(&title_norm, &channel_norm, &artist_names);
+        if !artist_names.is_empty() && artist_points == 0 {
+            continue;
+        }
+        let official_points = official_points(
+            &title_norm,
+            &channel_norm,
+            entry
+                .get("channel_is_verified")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        );
+        let duration_points = match (expected_duration, duration) {
+            (Some(expected), Some(actual)) => {
+                let tolerance = (expected as f64 * 0.2).max(15.0).min(60.0);
+                let difference = (actual as f64 - expected as f64).abs();
+                (40.0 * (1.0 - difference / tolerance)).round() as i32
+            }
+            _ => 0,
+        };
+        let score = title_points + artist_points + official_points + duration_points;
+        if score < 80 {
+            continue;
+        }
+
+        let url = entry
+            .get("url")
+            .and_then(Value::as_str)
+            .filter(|url| url.starts_with("https://"))
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("https://www.youtube.com/watch?v={id}"));
+        let candidate = YoutubeMatch {
+            url,
+            title: candidate_title.to_owned(),
+            channel: channel.to_owned(),
+            duration,
+        };
+        if best
+            .as_ref()
+            .map(|(best_score, _)| score > *best_score)
+            .unwrap_or(true)
+        {
+            best = Some((score, candidate));
+        }
+    }
+
+    best.map(|(_, candidate)| candidate)
+}
+
+/// Liest eine Zahl aus einem JSON-Wert, auch wenn sie als Fließkommazahl kommt.
+fn number(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_f64().filter(|number| *number > 0.0).map(|number| number.round() as u64))
+}
+
+/// Entfernt Klammerzusätze wie „(Official Audio)“ oder „[Lyrics]“.
+fn strip_brackets(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut depth = 0usize;
+    for character in value.chars() {
+        match character {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(character),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Prüft, ob eine Wortgruppe als eigenständige Wörter im Text vorkommt.
+fn contains_phrase(text: &str, phrase: &str) -> bool {
+    if phrase.is_empty() {
+        return false;
+    }
+    format!(" {text} ").contains(&format!(" {phrase} "))
+}
+
+/// Prüft, ob ein Treffer ein unerwünschtes Wort enthält, das nicht zum Track gehört.
+fn contains_unwanted(candidate: &str, track: &str, words: &[&str]) -> bool {
+    words
+        .iter()
+        .any(|word| contains_phrase(candidate, word) && !contains_phrase(track, word))
+}
+
+/// Zerlegt einen Videotitel an den üblichen Trennern in Titel und Interpret.
+fn title_segments(title: &str) -> Vec<String> {
+    let mut parts: Vec<&str> = vec![title];
+    for separator in [" - ", " – ", " — ", " ~ ", " | ", ":"] {
+        let mut next = Vec::new();
+        for part in parts {
+            next.extend(part.split(separator));
+        }
+        parts = next;
+    }
+    parts
+        .into_iter()
+        .map(|part| normalize_words(&strip_brackets(part)))
+        .filter(|part| !part.is_empty())
+        .collect()
+}
+
+/// Bewertet, wie gut der Videotitel zum Track passt.
+fn title_match_points(
+    title_norm: &str,
+    clean_norm: &str,
+    raw_title: &str,
+    track_title: &str,
+) -> Option<i32> {
+    if track_title.is_empty() {
+        return None;
+    }
+    if clean_norm == track_title
+        || title_segments(raw_title)
+            .iter()
+            .any(|segment| segment == track_title)
+    {
+        return Some(75);
+    }
+
+    // Bei sehr kurzen oder allgemeinen Titeln wäre eine Teilübereinstimmung
+    // zu unsicher („Intro“ passt sonst auf jedes „Mufasa Intro“).
+    let words = track_title.split_whitespace().count();
+    let characters = track_title.chars().filter(|c| c.is_alphanumeric()).count();
+    let generic = matches!(track_title, "intro" | "outro" | "interlude" | "skit");
+    if generic || (words == 1 && characters <= 5) {
+        return None;
+    }
+
+    if contains_phrase(clean_norm, track_title) || contains_phrase(title_norm, track_title) {
+        Some(45)
+    } else {
+        None
+    }
+}
+
+/// Bewertet, ob der Interpret im Titel oder im Kanalnamen vorkommt.
+fn artist_match_points(title_norm: &str, channel_norm: &str, artists: &[String]) -> i32 {
+    let title_compact = title_norm.replace(' ', "");
+    let channel_compact = channel_norm.replace(' ', "");
+    let mut points = 0;
+    for artist in artists {
+        let compact = artist.replace(' ', "");
+        let channel_exact = channel_norm == *artist
+            || channel_norm.ends_with(&format!(" {artist}"))
+            || channel_compact == compact;
+        if channel_exact {
+            points = points.max(50);
+        } else if compact.len() >= 3
+            && (channel_compact.contains(&compact) || channel_norm.contains(artist.as_str()))
+        {
+            points = points.max(35);
+        }
+        if contains_phrase(title_norm, artist)
+            || (compact.len() >= 3 && title_compact.contains(&compact))
+        {
+            points = points.max(30);
+        }
+    }
+    points
+}
+
+/// Vergibt Zusatzpunkte für offizielle Kanäle und Kennzeichnungen.
+fn official_points(title_norm: &str, channel_norm: &str, verified: bool) -> i32 {
+    let mut points = 0;
+    if channel_norm.ends_with(" topic") {
+        points += 45;
+    }
+    if channel_norm.contains("vevo") {
+        points += 25;
+    }
+    if verified {
+        points += 30;
+    }
+    if channel_norm.contains("official") {
+        points += 10;
+    }
+    if contains_phrase(title_norm, "official audio") {
+        points += 20;
+    } else if contains_phrase(title_norm, "official music video")
+        || contains_phrase(title_norm, "official video")
+    {
+        points += 10;
+    }
+    if contains_phrase(title_norm, "audio") {
+        points += 5;
+    }
+    if contains_phrase(title_norm, "lyrics") {
+        points += 5;
+    }
+    points
 }
 
 /// Wandelt einen Track in die Metadaten für die Engine um.
@@ -1411,5 +1917,195 @@ mod tests {
             }]
         });
         assert_eq!(pick_deezer_album(&value, "MUSIC", "Playboi Carti"), Some(7));
+    }
+
+    fn youtube_entry(id: &str, title: &str, channel: &str, duration: u64) -> Value {
+        json!({
+            "id": id,
+            "url": format!("https://www.youtube.com/watch?v={id}"),
+            "title": title,
+            "channel": channel,
+            "duration": duration,
+            "channel_is_verified": channel == "OsamaSon",
+        })
+    }
+
+    #[test]
+    fn waehlt_offizielles_video_statt_how_it_was_made() {
+        let entries = vec![
+            youtube_entry(
+                "howmade",
+                "(99% ACCURATE) How \"GTFO The Room\" By OsamaSon was made in FL Studio",
+                "Coopin",
+                282,
+            ),
+            youtube_entry(
+                "extended",
+                "Osamason - GTFO The Room (Extended Intro) [prod.rlly]",
+                "iflookscouldntkill",
+                181,
+            ),
+            youtube_entry(
+                "live",
+                "OsamaSon - GTFO The Room Live @ The Novo in Los Angeles",
+                "da man",
+                105,
+            ),
+            youtube_entry("official", "OsamaSon - GTFO The Room", "OsamaSon", 141),
+            youtube_entry(
+                "slowed",
+                "OsamaSon ~ GTFO The Room {Slowed + Reverb}",
+                "Cha'quavious",
+                177,
+            ),
+        ];
+        let found = pick_youtube_candidate(
+            &entries,
+            "GTFO The Room",
+            &["OsamaSon".to_string()],
+            Some(141),
+        )
+        .expect("kein passendes Video gefunden");
+        assert_eq!(found.url, "https://www.youtube.com/watch?v=official");
+        assert_eq!(found.duration, Some(141));
+    }
+
+    #[test]
+    fn verwirft_mixe_und_falsche_laufzeiten() {
+        let entries = vec![
+            youtube_entry(
+                "album",
+                "OsamaSon - Jump Out V1 (FULL ALBUM)",
+                "ricochet",
+                5028,
+            ),
+            youtube_entry(
+                "howmade",
+                "[99% Accurate] How Mufasa by OsamaSon was made.",
+                "suroi",
+                738,
+            ),
+            youtube_entry(
+                "slowed",
+                "OsamaSon - Mufasa (432hz)",
+                "Ethyro",
+                108,
+            ),
+        ];
+        assert!(pick_youtube_candidate(
+            &entries,
+            "Mufasa",
+            &["OsamaSon".to_string()],
+            Some(107),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn erkennt_lyrics_video_als_rueckfall() {
+        let entries = vec![
+            youtube_entry(
+                "howmade",
+                "How \"GTFO The Room\" by OsamaSon was made",
+                "9bbb9",
+                285,
+            ),
+            youtube_entry(
+                "lyrics",
+                "OsamaSon - GTFO The Room (Lyrics)",
+                "LyricVault",
+                141,
+            ),
+        ];
+        let found = pick_youtube_candidate(
+            &entries,
+            "GTFO The Room",
+            &["OsamaSon".to_string()],
+            Some(141),
+        )
+        .expect("kein Lyrics-Video gefunden");
+        assert_eq!(found.title, "OsamaSon - GTFO The Room (Lyrics)");
+    }
+
+    #[test]
+    fn verwirft_fremden_interpreten() {
+        let entries = vec![youtube_entry(
+            "fremd",
+            "IF THE MUSIC TOO LOUD GTFO THE ROOM (Official Audio)",
+            "Baby Monroe",
+            115,
+        )];
+        assert!(pick_youtube_candidate(
+            &entries,
+            "GTFO The Room",
+            &["OsamaSon".to_string()],
+            Some(141),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn erkennt_interpret_vor_dem_titel() {
+        let entries = vec![youtube_entry(
+            "reupload",
+            "Mufasa - OsamaSon",
+            "babyjump",
+            107,
+        )];
+        let found = pick_youtube_candidate(
+            &entries,
+            "Mufasa",
+            &["OsamaSon".to_string()],
+            Some(107),
+        )
+        .expect("Titel mit Interpret vorne wurde nicht erkannt");
+        assert_eq!(found.duration, Some(107));
+    }
+
+    #[test]
+    fn kurze_titel_werden_nur_exakt_verglichen() {
+        let entries = vec![youtube_entry(
+            "falsch",
+            "OsamaSon - Jumpout",
+            "OsamaSon",
+            100,
+        )];
+        assert!(pick_youtube_candidate(
+            &entries,
+            "Jump",
+            &["OsamaSon".to_string()],
+            Some(100),
+        )
+        .is_none());
+
+        let entries = vec![youtube_entry(
+            "richtig",
+            "OsamaSon - Jump",
+            "OsamaSon",
+            100,
+        )];
+        assert!(pick_youtube_candidate(
+            &entries,
+            "Jump",
+            &["OsamaSon".to_string()],
+            Some(100),
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn suchanfrage_enthaelt_interpret_und_titel() {
+        assert_eq!(
+            search_query("Mufasa", &["OsamaSon".to_string()]),
+            "OsamaSon Mufasa"
+        );
+    }
+
+    #[test]
+    fn laufzeit_toleranz_erkennt_mixe() {
+        assert!(duration_is_close(141, 141.0));
+        assert!(duration_is_close(107, 115.0));
+        assert!(!duration_is_close(141, 281.0));
+        assert!(!duration_is_close(107, 738.0));
     }
 }

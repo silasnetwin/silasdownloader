@@ -177,6 +177,39 @@ pub fn spawn_download<R: Runtime>(
     });
 }
 
+/// Prüft, ob eine gemessene Laufzeit zur erwarteten passt.
+///
+/// Musikvideos sind oft ein paar Sekunden länger als die Spotify-Fassung. Deshalb
+/// gilt ein kleiner Spielraum. Stunden-Mixe und „How it was made“-Videos fallen
+/// dagegen deutlich heraus.
+pub fn duration_is_close(expected: u64, actual: f64) -> bool {
+    if expected == 0 || !actual.is_finite() || actual <= 0.0 {
+        return false;
+    }
+    let tolerance = (expected as f64 * 0.2).max(15.0).min(60.0);
+    (actual - expected as f64).abs() <= tolerance
+}
+
+/// Liest die Laufzeit einer fertigen Datei.
+fn probe_duration(ffprobe: &Path, input: &Path) -> Option<f64> {
+    let out = hidden_command(ffprobe)
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+        ])
+        .arg(input)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
 /// Führt einen Download aus und wartet, bis er fertig ist.
 ///
 /// Das ist die Grundlage für Abläufe mit begrenzter Parallelität: ein Aufrufer
@@ -543,37 +576,60 @@ pub fn run_download<R: Runtime>(
 
     // Zusätzliche Metadaten (etwa aus Spotify) nach dem Download einspielen.
     if outcome.is_ok() {
-        if let Some(metadata) = request.metadata.as_ref() {
-            // Die letzte Datei, die wirklich da ist, ist die fertige Datei.
-            let file = output_files
-                .iter()
-                .rev()
-                .find(|path| path.exists())
-                .cloned()
-                .or_else(|| {
-                    expected_output_file(&settings, request.metadata.as_ref())
-                        .filter(|path| path.exists())
-                });
-            if let Some(file) = &file {
-                let cover = metadata
-                    .artwork_path
-                    .as_ref()
-                    .map(|path| PathBuf::from(path))
-                    .filter(|path| path.is_file());
-                let tagging = crate::engine::tags::apply_metadata(&app, file, metadata);
-                if let Err(error) = &tagging {
-                    // Bei einem Fehler bleibt eine Notiz stehen, damit man
-                    // nachsehen kann, was genau nicht geklappt hat.
-                    let _ = std::fs::write(
-                        tools.runtime_dir.join(format!("job-{job_id}-meta.log")),
-                        format!(
-                            "datei={}\ncover={:?}\ncover_existiert={}\nfehler={error}\n",
-                            file.display(),
-                            metadata.artwork_path,
-                            cover.is_some(),
-                        ),
-                    );
-                    outcome = Err(error.clone());
+        // Die letzte Datei, die wirklich da ist, ist die fertige Datei.
+        let file = output_files
+            .iter()
+            .rev()
+            .find(|path| path.exists())
+            .cloned()
+            .or_else(|| {
+                expected_output_file(&settings, request.metadata.as_ref())
+                    .filter(|path| path.exists())
+            });
+
+        // Bei Spotify ist die erwartete Laufzeit bekannt. Weicht die geladene
+        // Datei stark ab, ist vermutlich ein Mix oder ein ganz anderes Video
+        // erwischt worden. Die Datei wird dann entfernt, statt sie zu behalten.
+        if let (Some(expected), Some(file)) = (
+            request.expected_duration.filter(|duration| *duration > 0),
+            file.as_ref(),
+        ) {
+            if let Some(actual) = probe_duration(&tools.ffprobe, file) {
+                if !duration_is_close(expected, actual) {
+                    let _ = std::fs::remove_file(file);
+                    outcome = Err(format!(
+                        "Die geladene Datei dauert {:.0} Sekunden statt der erwarteten \
+                         {expected} Sekunden. Sie wurde entfernt, weil vermutlich das \
+                         falsche Video geladen wurde.",
+                        actual
+                    ));
+                }
+            }
+        }
+
+        if outcome.is_ok() {
+            if let Some(metadata) = request.metadata.as_ref() {
+                if let Some(file) = &file {
+                    let cover = metadata
+                        .artwork_path
+                        .as_ref()
+                        .map(|path| PathBuf::from(path))
+                        .filter(|path| path.is_file());
+                    let tagging = crate::engine::tags::apply_metadata(&app, file, metadata);
+                    if let Err(error) = &tagging {
+                        // Bei einem Fehler bleibt eine Notiz stehen, damit man
+                        // nachsehen kann, was genau nicht geklappt hat.
+                        let _ = std::fs::write(
+                            tools.runtime_dir.join(format!("job-{job_id}-meta.log")),
+                            format!(
+                                "datei={}\ncover={:?}\ncover_existiert={}\nfehler={error}\n",
+                                file.display(),
+                                metadata.artwork_path,
+                                cover.is_some(),
+                            ),
+                        );
+                        outcome = Err(error.clone());
+                    }
                 }
             }
         }

@@ -1,6 +1,9 @@
 //! Prüft das Lesen einer öffentlichen Spotify-Auswahl.
 
-use silasdownloader_lib::spotify::fetch_public_source;
+use silasdownloader_lib::{
+    engine::process::duration_is_close,
+    spotify::{fetch_public_source, resolve_youtube_match},
+};
 
 #[test]
 #[ignore = "benötigt eine Internetverbindung"]
@@ -111,6 +114,92 @@ fn findet_das_album_und_die_tracknummer() {
         "zu wenige Titel mit Album: {with_album} von {}",
         playlist.tracks.len()
     );
+
+    let _ = std::fs::remove_dir_all(&temporary);
+}
+
+#[test]
+#[ignore = "benötigt eine Internetverbindung"]
+fn findet_richtige_videos_statt_mixe() {
+    let bin = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("bin");
+    let yt_dlp = bin.join("yt-dlp.exe");
+    let deno = bin.join("deno.exe");
+    let tracks = [
+        ("GTFO The Room", "OsamaSon", 141u64),
+        ("Mufasa", "OsamaSon", 107),
+        ("Jumpout", "OsamaSon", 103),
+    ];
+
+    for (title, artist, duration) in tracks {
+        let found = resolve_youtube_match(
+            &yt_dlp,
+            &deno,
+            title,
+            &[artist.to_string()],
+            Some(duration),
+        )
+        .unwrap_or_else(|error| panic!("{title}: {error}"));
+        println!(
+            "{title}: {} | {} s | {}",
+            found.title,
+            found.duration.unwrap_or_default(),
+            found.url
+        );
+        assert!(
+            found
+                .duration
+                .is_some_and(|actual| actual.abs_diff(duration) <= 20),
+            "falsche Laufzeit für {title}: {:?} statt {duration}",
+            found.duration
+        );
+    }
+}
+
+#[test]
+#[ignore = "benötigt eine Internetverbindung"]
+fn findet_fuer_jedes_album_video_die_richtige_laufzeit() {
+    let temporary = std::env::temp_dir().join("silas-spotify-video-test");
+    let _ = std::fs::remove_dir_all(&temporary);
+    let album = fetch_public_source(
+        "https://open.spotify.com/album/5Vb4K4Xf4KPFupmhHi5COM",
+        &temporary,
+        12,
+    )
+    .expect("Album konnte nicht gelesen werden");
+
+    let bin = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("bin");
+    let yt_dlp = bin.join("yt-dlp.exe");
+    let deno = bin.join("deno.exe");
+
+    for track in &album.tracks {
+        let found = resolve_youtube_match(
+            &yt_dlp,
+            &deno,
+            &track.title,
+            &track.artists,
+            track.duration,
+        )
+        .unwrap_or_else(|error| panic!("{}: {error}", track.title));
+        println!(
+            "{} | Spotify {:?} | YouTube {:?} | {}",
+            track.title, track.duration, found.duration, found.title
+        );
+        if let Some(expected) = track.duration {
+            assert!(
+                found
+                    .duration
+                    .is_some_and(|actual| duration_is_close(expected, actual as f64)),
+                "falsche Laufzeit für {}: {:?} statt {expected} ({})",
+                track.title,
+                found.duration,
+                found.title
+            );
+        }
+    }
 
     let _ = std::fs::remove_dir_all(&temporary);
 }

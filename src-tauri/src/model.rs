@@ -486,6 +486,10 @@ pub struct DownloadRequest {
     /// Zusätzliche Metadaten, die nach dem Download gesetzt werden.
     #[serde(default)]
     pub metadata: Option<MediaMetadata>,
+    /// Erwartete Laufzeit in Sekunden. Weicht die fertige Datei stark ab, wird
+    /// sie verworfen. Das schützt vor Mixen und falschen Videos.
+    #[serde(default)]
+    pub expected_duration: Option<u64>,
     /// Was für ein Inhalt geladen wird.
     #[serde(default)]
     pub kind: ContentKind,
