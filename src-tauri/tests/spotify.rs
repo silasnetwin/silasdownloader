@@ -1,9 +1,6 @@
 //! Prüft das Lesen einer öffentlichen Spotify-Auswahl.
 
-use silasdownloader_lib::{
-    engine::process::duration_is_close,
-    spotify::{fetch_public_source, resolve_youtube_match},
-};
+use silasdownloader_lib::spotify::{fetch_public_source, resolve_youtube_match};
 
 #[test]
 #[ignore = "benötigt eine Internetverbindung"]
@@ -189,10 +186,12 @@ fn findet_fuer_jedes_album_video_die_richtige_laufzeit() {
             track.title, track.duration, found.duration, found.title
         );
         if let Some(expected) = track.duration {
+            // Spotify rundet auf Sekunden. Mehr als drei Sekunden Abweichung
+            // bedeuten meist einen anderen Schnitt, etwa mit Musikvideo-Abspann.
             assert!(
                 found
                     .duration
-                    .is_some_and(|actual| duration_is_close(expected, actual as f64)),
+                    .is_some_and(|actual| actual.abs_diff(expected) <= 3),
                 "falsche Laufzeit für {}: {:?} statt {expected} ({})",
                 track.title,
                 found.duration,

@@ -69,7 +69,7 @@
         "headerImage": "icons/header.bmp",
         "sidebarImage": "icons/sidebar.bmp",
         "startMenuFolder": "SilasDownloader",
-        "installerHooks": null,
+        "installerHooks": "./windows/installer-hooks.nsh",
         "minimumWebview2Version": "0.1.0"
       }
     }

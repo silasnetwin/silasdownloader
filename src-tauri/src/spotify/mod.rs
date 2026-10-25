@@ -660,6 +660,12 @@ fn search_youtube(
         .unwrap_or_default())
 }
 
+/// Wie nah die Laufzeit eines Treffers an Spotify liegen muss, damit er
+/// bevorzugt wird. Offizielle Musikvideos enthalten am Ende oft einen
+/// zusätzlichen Abspann; eine Fassung mit passender Laufzeit ist dann die
+/// bessere Wahl.
+const PREFERRED_DURATION_SECONDS: u64 = 2;
+
 /// Wählt aus den Suchtreffern das plausibelste Video aus.
 pub fn pick_youtube_candidate(
     entries: &[Value],
@@ -687,6 +693,7 @@ pub fn pick_youtube_candidate(
         .collect();
 
     let mut best: Option<(i32, YoutubeMatch)> = None;
+    let mut best_with_matching_duration: Option<(i32, YoutubeMatch)> = None;
     for entry in entries {
         if entry
             .get("live_status")
@@ -766,6 +773,19 @@ pub fn pick_youtube_candidate(
             channel: channel.to_owned(),
             duration,
         };
+        // Eine Fassung mit fast gleicher Laufzeit hat Vorrang. Sonst gewinnt
+        // ein offizielles Musikvideo trotz zusätzlichem Abspann nur wegen
+        // seiner Kennzeichnung.
+        if let (Some(expected), Some(actual)) = (expected_duration, duration) {
+            if actual.abs_diff(expected) <= PREFERRED_DURATION_SECONDS
+                && best_with_matching_duration
+                    .as_ref()
+                    .map(|(best_score, _)| score > *best_score)
+                    .unwrap_or(true)
+            {
+                best_with_matching_duration = Some((score, candidate.clone()));
+            }
+        }
         if best
             .as_ref()
             .map(|(best_score, _)| score > *best_score)
@@ -775,7 +795,9 @@ pub fn pick_youtube_candidate(
         }
     }
 
-    best.map(|(_, candidate)| candidate)
+    best_with_matching_duration
+        .or(best)
+        .map(|(_, candidate)| candidate)
 }
 
 /// Liest eine Zahl aus einem JSON-Wert, auch wenn sie als Fließkommazahl kommt.
@@ -1968,6 +1990,33 @@ mod tests {
         .expect("kein passendes Video gefunden");
         assert_eq!(found.url, "https://www.youtube.com/watch?v=official");
         assert_eq!(found.duration, Some(141));
+    }
+
+    #[test]
+    fn bevorzugt_passende_laufzeit_statt_musikvideo_mit_abspann() {
+        let entries = vec![
+            youtube_entry(
+                "official",
+                "OsamaSon - The Whole World Is Free [Official Music Video]",
+                "OsamaSon",
+                112,
+            ),
+            youtube_entry(
+                "alternative",
+                "OsamaSon - The Whole World Is Free",
+                "Florian",
+                105,
+            ),
+        ];
+        let found = pick_youtube_candidate(
+            &entries,
+            "The Whole World Is Free",
+            &["OsamaSon".to_string()],
+            Some(104),
+        )
+        .expect("kein passendes Video gefunden");
+        assert_eq!(found.url, "https://www.youtube.com/watch?v=alternative");
+        assert_eq!(found.duration, Some(105));
     }
 
     #[test]

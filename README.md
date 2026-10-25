@@ -23,7 +23,7 @@ Ein Klick auf die Setup-Datei, ein zweiter auf den Link — fertig.
 |---|---|
 | 🎬 **Videos** | Link einfügen, fertig. Die App erkennt selbst, ob es ein einzelnes Video, eine Playlist oder eine Serie mit allen Folgen ist. |
 | 📺 **Serien** | Serienseiten (etwa KiKA „Alle Folgen") werden in die einzelnen Folgen aufgelöst und nach Staffel gefiltert. |
-| 🎵 **Musik** | Spotify-Playlist, -Album oder einzelner Track: jeder Titel wird gesucht, dabei nach **Titel, Interpret und Laufzeit** geprüft (keine Mixe oder „How it was made"-Videos) und als MP3 mit **Album, Tracknummer, Jahr, Songtext und quadratischem Cover** beschriftet. |
+| 🎵 **Musik** | Spotify-Playlist, -Album oder einzelner Track: jeder Titel wird gesucht, dabei nach **Titel, Interpret und Laufzeit** geprüft (keine Mixe oder „How it was made"-Videos) und als MP3 mit **Album, Tracknummer, Jahr, Songtext und quadratischem Cover** beschriftet. Gibt es mehrere passende Fassungen, gewinnt die mit der genauesten Laufzeit - so landen keine Abspänne aus Musikvideos in der MP3. |
 | 🔄 **Konverter** | Video in Audio, Tonspur in MP3 oder FLAC, mit Cover und Tags — per Drag & Drop. |
 | 🖱️ **Aus dem Browser** | Die mitgelieferte Erweiterung übergibt die aktuelle Seite oder einen Link per `silasdownloader://` an die App. |
 | 📥 **Im Infobereich** | Ein Symbol neben der Uhr zeigt den Fortschritt. Schließen legt die App dorthin — die Downloads laufen weiter. |
@@ -49,7 +49,9 @@ Updates holt sich die App selbst — der Tab **Über** prüft auf neue Versionen
 Die App bringt einen eigenen Updater mit. Er fragt beim Start einmal leise nach
 und lässt sich jederzeit über **Über → Nach Updates suchen** auslösen. Findet er
 eine neue Version, lädt er den Installer herunter, prüft die **Signatur** und
-startet die App danach neu.
+startet die App danach neu. Unter Windows wartet der Installer dabei, bis die
+laufende App vollständig beendet ist. Die Meldung „Failed to kill
+SilasDownloader“ kann so nicht mehr auftreten.
 
 Damit das sicher bleibt, nimmt die App nur Pakete an, die mit dem passenden
 privaten Schlüssel signiert wurden. Der öffentliche Schlüssel steht in
