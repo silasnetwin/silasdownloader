@@ -71,8 +71,13 @@ fn findet_das_album_und_die_tracknummer() {
     println!("Album: {}", album.title);
     for track in album.tracks.iter().take(4) {
         println!(
-            "  {:?} | Album {:?} | Interpret {:?} | Track {:?} | Jahr {:?}",
-            track.title, track.album, track.album_artist, track.track_number, track.year
+            "  {:?} | Album {:?} | Interpret {:?} | Track {:?} | Jahr {:?} | explizit {:?}",
+            track.title,
+            track.album,
+            track.album_artist,
+            track.track_number,
+            track.year,
+            track.explicit
         );
     }
     assert!(!album.tracks.is_empty(), "keine Titel gelesen");
@@ -136,6 +141,7 @@ fn findet_richtige_videos_statt_mixe() {
             title,
             &[artist.to_string()],
             Some(duration),
+            false,
         )
         .unwrap_or_else(|error| panic!("{title}: {error}"));
         println!(
@@ -156,6 +162,54 @@ fn findet_richtige_videos_statt_mixe() {
 
 #[test]
 #[ignore = "benötigt eine Internetverbindung"]
+fn findet_bei_expliziten_titeln_die_normale_fassung() {
+    let bin = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("bin");
+    let yt_dlp = bin.join("yt-dlp.exe");
+    let deno = bin.join("deno.exe");
+    let tracks = [
+        ("Without Me", "Eminem", 290u64),
+        ("Not Like Us", "Kendrick Lamar", 274),
+    ];
+
+    for (title, artist, duration) in tracks {
+        let found = resolve_youtube_match(
+            &yt_dlp,
+            &deno,
+            title,
+            &[artist.to_string()],
+            Some(duration),
+            true,
+        )
+        .unwrap_or_else(|error| panic!("{title}: {error}"));
+        println!(
+            "{title}: {} | {} s | {} | {}",
+            found.title,
+            found.duration.unwrap_or_default(),
+            found.channel,
+            found.url
+        );
+        let selected = found.title.to_lowercase();
+        for marker in ["clean", "censored", "family friendly", "kidz bop"] {
+            assert!(
+                !selected.contains(marker),
+                "zensierte Fassung für {title}: {}",
+                found.title
+            );
+        }
+        assert!(
+            found
+                .duration
+                .is_some_and(|actual| actual.abs_diff(duration) <= 5),
+            "falsche Laufzeit für {title}: {:?} statt {duration}",
+            found.duration
+        );
+    }
+}
+
+#[test]
+#[ignore = "benötigt eine Internetverbindung"]
 fn findet_fuer_jedes_album_video_die_richtige_laufzeit() {
     let temporary = std::env::temp_dir().join("silas-spotify-video-test");
     let _ = std::fs::remove_dir_all(&temporary);
@@ -165,6 +219,10 @@ fn findet_fuer_jedes_album_video_die_richtige_laufzeit() {
         12,
     )
     .expect("Album konnte nicht gelesen werden");
+    assert!(
+        album.tracks.iter().any(|track| track.explicit),
+        "Spotify-Explizit-Kennzeichnung wurde nicht gelesen"
+    );
 
     let bin = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("resources")
@@ -179,12 +237,25 @@ fn findet_fuer_jedes_album_video_die_richtige_laufzeit() {
             &track.title,
             &track.artists,
             track.duration,
+            track.explicit,
         )
         .unwrap_or_else(|error| panic!("{}: {error}", track.title));
         println!(
-            "{} | Spotify {:?} | YouTube {:?} | {}",
-            track.title, track.duration, found.duration, found.title
+            "{} | Spotify {:?} | explizit {} | YouTube {:?} | {}",
+            track.title, track.duration, track.explicit, found.duration, found.title
         );
+        if track.explicit {
+            let selected = found.title.to_lowercase();
+            let track_title = track.title.to_lowercase();
+            assert!(
+                ["clean", "censored", "family friendly"].iter().all(|word| {
+                    track_title.contains(word) || !selected.contains(word)
+                }),
+                "zensierte Fassung für expliziten Titel {}: {}",
+                track.title,
+                found.title
+            );
+        }
         if let Some(expected) = track.duration {
             // Spotify rundet auf Sekunden. Mehr als drei Sekunden Abweichung
             // bedeuten meist einen anderen Schnitt, etwa mit Musikvideo-Abspann.

@@ -72,6 +72,15 @@ Der Workflow `.github/workflows/release.yml` baut daraufhin den Installer, signi
 ihn, legt `latest.json` an und veröffentlicht das Release. Die App findet es beim
 nächsten Start.
 
+## Spotify-Versionen
+
+YouTube-Fassungen mit „Clean“, „Censored“, „Family Friendly“ oder ähnlichen
+Zusätzen werden übersprungen. Bei expliziten Spotify-Titeln sucht die App
+zusätzlich nach der expliziten Version. Gibt es nur eine zensierte Fassung,
+wird der Titel nicht geladen — statt eine falsche Datei in der Mediathek
+abzulegen. Songs, bei denen „Clean“ zum eigentlichen Titel oder Interpreten
+gehört, bleiben davon unberührt.
+
 ## Songtexte
 
 Bei Spotify-Downloads holt die App den Songtext von

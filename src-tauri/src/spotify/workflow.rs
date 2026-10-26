@@ -242,6 +242,7 @@ fn download_tracks(
                 &track.title,
                 &track.artists,
                 track.duration,
+                track.explicit,
             ) {
                 Ok(found) => found,
                 Err(error) => {

@@ -17,7 +17,7 @@ use std::{
     time::Duration,
 };
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::{
     engine::{
@@ -74,6 +74,8 @@ pub struct SpotifyTrack {
     pub artwork_path: Option<PathBuf>,
     /// Laufzeit in Sekunden.
     pub duration: Option<u64>,
+    /// Ob Spotify den Titel als explizit kennzeichnet.
+    pub explicit: bool,
 }
 
 /// Die gelesene Spotify-Auswahl.
@@ -352,6 +354,10 @@ pub fn fetch_public_source(
             .and_then(|date| date.get("isoString"))
             .and_then(Value::as_str)
             .and_then(parse_year),
+        explicit: entity
+            .and_then(Value::as_object)
+            .and_then(explicit_flag)
+            .unwrap_or(false),
     });
     collect_tracks(&page_data, &mut tracks, &mut seen, source_album);
     if tracks.is_empty() {
@@ -419,6 +425,30 @@ pub fn search_query(title: &str, artists: &[String]) -> String {
     } else {
         format!("{artist} {title}")
     }
+}
+
+/// Baut die Suchanfragen für YouTube.
+///
+/// Bei expliziten Spotify-Titeln kommt eine zusätzliche Suche nach der
+/// expliziten Fassung hinzu. So wird auch dann die normale Version gefunden,
+/// wenn die ersten Treffer nur Clean- oder zensierte Fassungen enthalten.
+fn youtube_queries(
+    title: &str,
+    artists: &[String],
+    explicit: bool,
+) -> Vec<(String, usize)> {
+    let base = search_query(title, artists);
+    let mut queries = vec![(base.clone(), 15usize)];
+    if explicit {
+        queries.push((format!("{base} explicit"), 15));
+    }
+    for suffix in ["topic", "official audio"] {
+        let query = format!("{base} {suffix}");
+        if !queries.iter().any(|(known, _)| *known == query) {
+            queries.push((query, 10));
+        }
+    }
+    queries
 }
 
 /// Ein YouTube-Treffer, der zu einem Spotify-Titel passt.
@@ -511,6 +541,24 @@ const BAD_TITLE_WORDS: &[&str] = &[
     "session",
     "extended",
     "radio edit",
+    // Zensierte oder „familienfreundliche“ Fassungen sind nie die normale
+    // Version und werden deshalb unabhängig vom Spotify-Flag verworfen.
+    "clean",
+    "censored",
+    "edited",
+    "family friendly",
+    "kidz bop",
+    "kids bop",
+    "no swearing",
+    "no cursing",
+    "no profanity",
+    "profanity removed",
+    "bleeped",
+    "bleeps",
+    "radio friendly",
+    "jugendfrei",
+    "zensiert",
+    "zensur",
     "teaser",
     "trailer",
     "snippet",
@@ -571,6 +619,13 @@ const BAD_CHANNEL_WORDS: &[&str] = &[
     "fl studio",
     "tribute",
     "parody",
+    "clean",
+    "censored",
+    "family friendly",
+    "kidz bop",
+    "kids bop",
+    "jugendfrei",
+    "zensiert",
 ];
 
 /// Sucht zu einem Spotify-Titel das passende YouTube-Video.
@@ -586,21 +641,15 @@ pub fn resolve_youtube_match(
     title: &str,
     artists: &[String],
     duration: Option<u64>,
+    explicit: bool,
 ) -> Result<YoutubeMatch, String> {
-    let base = search_query(title, artists);
-    let mut queries = vec![(base.clone(), 15usize)];
-    for suffix in ["topic", "official audio"] {
-        let query = format!("{base} {suffix}");
-        if !queries.iter().any(|(known, _)| *known == query) {
-            queries.push((query, 10));
-        }
-    }
-
     let mut last_error: Option<String> = None;
-    for (query, limit) in queries {
+    for (query, limit) in youtube_queries(title, artists, explicit) {
         match search_youtube(yt_dlp, deno, &query, limit) {
             Ok(entries) => {
-                if let Some(found) = pick_youtube_candidate(&entries, title, artists, duration) {
+                if let Some(found) =
+                    pick_youtube_candidate_with_explicit(&entries, title, artists, duration, explicit)
+                {
                     return Ok(found);
                 }
             }
@@ -611,8 +660,8 @@ pub fn resolve_youtube_match(
     Err(match last_error {
         Some(error) => format!("Die Videosuche für „{title}“ ist fehlgeschlagen: {error}"),
         None => format!(
-            "Für „{title}“ wurde kein passendes Video gefunden. Die Treffer waren Mixe, \
-             Cover oder hatten eine andere Laufzeit."
+            "Für „{title}“ wurde keine passende normale Fassung gefunden. Clean-, zensierte \
+             oder anders geschnittene Versionen werden bewusst nicht geladen."
         ),
     })
 }
@@ -672,6 +721,21 @@ pub fn pick_youtube_candidate(
     title: &str,
     artists: &[String],
     expected_duration: Option<u64>,
+) -> Option<YoutubeMatch> {
+    pick_youtube_candidate_with_explicit(entries, title, artists, expected_duration, false)
+}
+
+/// Wie [`pick_youtube_candidate`], berücksichtigt aber die Spotify-Kennzeichnung.
+///
+/// Bei expliziten Titeln werden Audiofassungen gegenüber Musikvideos bevorzugt:
+/// Offizielle Musikvideos sind auf YouTube häufig zensiert, auch wenn der Titel
+/// keinen „Clean“-Zusatz trägt.
+fn pick_youtube_candidate_with_explicit(
+    entries: &[Value],
+    title: &str,
+    artists: &[String],
+    expected_duration: Option<u64>,
+    explicit: bool,
 ) -> Option<YoutubeMatch> {
     let expected_duration = expected_duration.filter(|duration| *duration > 0);
     let track_title = {
@@ -756,7 +820,9 @@ pub fn pick_youtube_candidate(
             }
             _ => 0,
         };
-        let score = title_points + artist_points + official_points + duration_points;
+        let explicit_bonus = explicit_version_points(&title_norm, &channel_norm, explicit);
+        let score =
+            title_points + artist_points + official_points + duration_points + explicit_bonus;
         if score < 80 {
             continue;
         }
@@ -945,6 +1011,34 @@ fn official_points(title_norm: &str, channel_norm: &str, verified: bool) -> i32 
     points
 }
 
+/// Bevorzugt bei expliziten Spotify-Titeln die unzensierte Audiofassung.
+///
+/// Offizielle Musikvideos sind auf YouTube oft zensiert, ohne dass der Titel
+/// „Clean“ enthält. Ein kleiner Abzug sorgt dafür, dass eine vorhandene
+/// Audiofassung gewinnt; gibt es keine, bleibt das Musikvideo als Rückfall.
+fn explicit_version_points(title_norm: &str, channel_norm: &str, explicit: bool) -> i32 {
+    if !explicit {
+        return 0;
+    }
+    let mut points = 0;
+    if channel_norm.ends_with(" topic") {
+        points += 20;
+    }
+    if contains_phrase(title_norm, "official music video")
+        || contains_phrase(title_norm, "official video")
+        || contains_phrase(title_norm, "music video")
+    {
+        points -= 25;
+    }
+    if contains_phrase(title_norm, "audio") {
+        points += 15;
+    }
+    if contains_phrase(title_norm, "explicit") || contains_phrase(title_norm, "dirty") {
+        points += 15;
+    }
+    points
+}
+
 /// Wandelt einen Track in die Metadaten für die Engine um.
 pub fn to_metadata(track: &SpotifyTrack) -> MediaMetadata {
     MediaMetadata {
@@ -990,6 +1084,8 @@ struct AlbumContext {
     artwork_url: Option<String>,
     /// Erscheinungsjahr des Albums.
     year: Option<u32>,
+    /// Ob Spotify das Album als explizit kennzeichnet.
+    explicit: bool,
 }
 
 /// Ein Titel, für den Albumangaben fehlen.
@@ -1624,6 +1720,7 @@ fn collect_tracks(
                             .and_then(|date| date.get("isoString"))
                             .and_then(Value::as_str)
                             .and_then(parse_year),
+                        explicit: explicit_flag(object).unwrap_or(false),
                     }
                 })
                 .or(inherited_album);
@@ -1730,6 +1827,9 @@ fn collect_tracks(
                             artwork_path: None,
                             artwork_url,
                             duration,
+                            explicit: explicit_flag(object)
+                                .or_else(|| album_context.as_ref().map(|album| album.explicit))
+                                .unwrap_or(false),
                         });
                         seen.insert(id.to_owned(), ());
                     }
@@ -1746,6 +1846,44 @@ fn collect_tracks(
         }
         _ => {}
     }
+}
+
+/// Liest die Explizit-Kennzeichnung aus einem Spotify-Objekt.
+///
+/// Je nach Einbettung steht sie als `isExplicit`, `explicit` oder in
+/// `contentRatings.labels`. `None` bedeutet: Das Objekt enthält keine Angabe.
+fn explicit_flag(value: &Map<String, Value>) -> Option<bool> {
+    let mut recognized = false;
+    let mut explicit = false;
+    if let Some(flag) = value.get("isExplicit").and_then(Value::as_bool) {
+        recognized = true;
+        explicit |= flag;
+    }
+    if let Some(flag) = value.get("explicit").and_then(Value::as_bool) {
+        recognized = true;
+        explicit |= flag;
+    }
+    if let Some(labels) = value
+        .get("contentRatings")
+        .and_then(|ratings| ratings.get("labels"))
+        .and_then(Value::as_array)
+    {
+        recognized = true;
+        explicit |= labels.iter().any(|label| {
+            label
+                .as_str()
+                .is_some_and(|label| label.eq_ignore_ascii_case("EXPLICIT"))
+        });
+    }
+    if let Some(label) = value
+        .get("contentRating")
+        .and_then(|rating| rating.get("label").or_else(|| rating.get("rating")))
+        .and_then(Value::as_str)
+    {
+        recognized = true;
+        explicit |= label.eq_ignore_ascii_case("EXPLICIT");
+    }
+    recognized.then_some(explicit)
 }
 
 fn parse_number(value: &Value) -> Option<u32> {
@@ -1950,6 +2088,169 @@ mod tests {
             "duration": duration,
             "channel_is_verified": channel == "OsamaSon",
         })
+    }
+
+    #[test]
+    fn liest_explizit_kennzeichnung_aus_spotify_daten() {
+        let value = json!({
+            "entity": {
+                "type": "album",
+                "name": "Testalbum",
+                "uri": "spotify:album:test",
+                "isExplicit": true,
+                "trackList": [
+                    {
+                        "uri": "spotify:track:explicit",
+                        "title": "Explizit",
+                        "subtitle": "Testkünstler",
+                        "isExplicit": true,
+                        "contentRatings": { "labels": ["EXPLICIT"] },
+                        "duration": 180000
+                    },
+                    {
+                        "uri": "spotify:track:normal",
+                        "title": "Normal",
+                        "subtitle": "Testkünstler",
+                        "isExplicit": false,
+                        "contentRatings": { "labels": [] },
+                        "duration": 180000
+                    },
+                    {
+                        "uri": "spotify:track:rating",
+                        "title": "Nur Bewertung",
+                        "subtitle": "Testkünstler",
+                        "contentRatings": { "labels": ["EXPLICIT"] },
+                        "duration": 180000
+                    }
+                ]
+            }
+        });
+        let mut tracks = Vec::new();
+        collect_tracks(&value, &mut tracks, &mut HashMap::new(), None);
+        assert_eq!(tracks.len(), 3);
+        let by_id = |id: &str| {
+            tracks
+                .iter()
+                .find(|track| track.spotify_id == id)
+                .unwrap_or_else(|| panic!("Track {id} fehlt"))
+        };
+        assert!(by_id("explicit").explicit);
+        assert!(!by_id("normal").explicit);
+        assert!(by_id("rating").explicit);
+    }
+
+    #[test]
+    fn verwirft_clean_und_zensierte_fassungen() {
+        let entries = vec![
+            youtube_entry(
+                "clean",
+                "OsamaSon - GTFO The Room (Clean)",
+                "OsamaSon",
+                141,
+            ),
+            youtube_entry(
+                "censored",
+                "OsamaSon - GTFO The Room (Censored Version)",
+                "OsamaSon",
+                141,
+            ),
+            youtube_entry(
+                "family",
+                "OsamaSon - GTFO The Room (Family Friendly)",
+                "OsamaSon",
+                141,
+            ),
+            youtube_entry("normal", "OsamaSon - GTFO The Room", "OsamaSon", 141),
+        ];
+        let found = pick_youtube_candidate(
+            &entries,
+            "GTFO The Room",
+            &["OsamaSon".to_string()],
+            Some(141),
+        )
+        .expect("normale Fassung wurde nicht gefunden");
+        assert_eq!(found.url, "https://www.youtube.com/watch?v=normal");
+    }
+
+    #[test]
+    fn bevorzugt_bei_expliziten_titeln_audio_statt_musikvideo() {
+        let entries = vec![
+            youtube_entry(
+                "video",
+                "OsamaSon - GTFO The Room (Official Music Video)",
+                "OsamaSon",
+                141,
+            ),
+            youtube_entry("audio", "OsamaSon - GTFO The Room", "OsamaSon", 141),
+        ];
+        let found = pick_youtube_candidate_with_explicit(
+            &entries,
+            "GTFO The Room",
+            &["OsamaSon".to_string()],
+            Some(141),
+            true,
+        )
+        .expect("Audiofassung wurde nicht gefunden");
+        assert_eq!(found.url, "https://www.youtube.com/watch?v=audio");
+
+        // Ohne explizite Kennzeichnung bleibt das offizielle Musikvideo vorne.
+        let found = pick_youtube_candidate(
+            &entries,
+            "GTFO The Room",
+            &["OsamaSon".to_string()],
+            Some(141),
+        )
+        .expect("Musikvideo wurde nicht gefunden");
+        assert_eq!(found.url, "https://www.youtube.com/watch?v=video");
+    }
+
+    #[test]
+    fn laedt_keine_reine_clean_fassung() {
+        let entries = vec![youtube_entry(
+            "clean",
+            "OsamaSon - GTFO The Room (Clean)",
+            "OsamaSon",
+            141,
+        )];
+        assert!(pick_youtube_candidate(
+            &entries,
+            "GTFO The Room",
+            &["OsamaSon".to_string()],
+            Some(141),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn erlaubt_clean_wenn_es_zum_titel_gehoert() {
+        let entries = vec![youtube_entry(
+            "taylor",
+            "Taylor Swift - Clean",
+            "Taylor Swift",
+            271,
+        )];
+        let found = pick_youtube_candidate(
+            &entries,
+            "Clean",
+            &["Taylor Swift".to_string()],
+            Some(271),
+        )
+        .expect("Titel mit „Clean“ im Namen wurde verworfen");
+        assert_eq!(found.title, "Taylor Swift - Clean");
+    }
+
+    #[test]
+    fn sucht_bei_expliziten_titeln_zusaetzlich_nach_explicit() {
+        let queries = youtube_queries("Mufasa", &["OsamaSon".to_string()], true);
+        assert_eq!(queries[0].0, "OsamaSon Mufasa");
+        assert!(queries
+            .iter()
+            .any(|(query, _)| query.as_str() == "OsamaSon Mufasa explicit"));
+
+        let queries = youtube_queries("Mufasa", &["OsamaSon".to_string()], false);
+        assert!(!queries
+            .iter()
+            .any(|(query, _)| query.as_str() == "OsamaSon Mufasa explicit"));
     }
 
     #[test]
